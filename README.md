@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # CertChain Registry – Baseline System (J26-NU-SE-002)
 Python 3.10+ · Flask · vanilla JS (no build step).
 
@@ -18,3 +19,7 @@ Python 3.10+ · Flask · vanilla JS (no build step).
 ## Known baseline weaknesses (intentional)
 Only structured fields are hashed; logo/seal/signature/QR/metadata are not. QR domain and file hash are reported, not enforced.
 `/api/dev/tamper` simulates a compromised organisation – lab use only.
+=======
+# RP-Base-System
+CertChain Registry: Baseline System  CertChain is a baseline prototype of a student certificate verification system built on a simulated permissioned blockchain. It is the common testbed for a security research project, where attacks and defenses are evaluated against the same system.
+>>>>>>> 2ea5583ed6e7c4674fbdeb248482750b35903a8d
