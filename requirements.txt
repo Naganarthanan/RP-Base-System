@@ -1,0 +1,5 @@
+flask>=3.0
+pillow>=10.1
+qrcode[pil]>=7.4
+opencv-python-headless>=4.9
+numpy
