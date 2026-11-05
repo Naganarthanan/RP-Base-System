@@ -1,2 +1,5 @@
+venv/
 __pycache__/
-data/node*.json
+.pytest_cache/
+data/
+.env
