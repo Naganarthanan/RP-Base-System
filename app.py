@@ -9,21 +9,24 @@ import sys
 
 from waitress import serve
 
-from certchain import create_app
+from certchain import create_app, create_site
 from certchain.app_support import ApiError, check_password
 
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
 def create_admin(username: str) -> None:
-    app = create_app(seed_demo=False)
+    from certchain.anchors import SYSTEMS
+
     password = getpass.getpass("Password: ")
     try:
         check_password(password)
     except ApiError as err:
         sys.exit(err.message)
-    app.config["add_user"](username.strip().lower(), password, "admin", None, must_change=False)
-    print(f"Admin '{username}' created.")
+    for system in SYSTEMS:
+        app = create_app(seed_demo=False, system=system)
+        app.config["add_user"](username.strip().lower(), password, "admin", None, must_change=False)
+    print(f"Admin '{username}' created on {', '.join(SYSTEMS)}.")
 
 
 def main() -> None:
@@ -37,7 +40,7 @@ def main() -> None:
     port = int(os.environ.get("PORT", "5000"))
     if env == "development" and host not in LOOPBACK:
         sys.exit("Refusing to start: development mode has quick login, so it can only bind to localhost.")
-    app = create_app(env=env)
+    app = create_site(env=env)
     print(f"CertChain running at http://{host}:{port} ({env} mode)", flush=True)
     serve(app, host=host, port=port, threads=8)
 

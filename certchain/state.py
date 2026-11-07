@@ -1,7 +1,5 @@
-"""In-memory read model rebuilt by replaying decrypted ledger transactions.
-
-Academic data has no table of its own: restarting the app reconstructs all of it
-from the chain.
+"""In-memory read model rebuilt by replaying the off-chain records that match their
+on-chain anchors. A record that fails its check is left out.
 """
 
 # Grade scale used for results and GPA. Replace with the university's official scale.
@@ -29,7 +27,7 @@ class State:
         self.reports: dict[str, dict] = {}
         self.certificates: dict[str, dict] = {}
 
-    def apply(self, tx: dict) -> None:
+    def apply(self, tx: dict, idx: int | None = None) -> None:
         kind, d = tx["type"], tx["data"]
         if kind == "student.upsert":
             self.students[d["id"]] = d
@@ -49,8 +47,8 @@ class State:
         elif kind == "report.add":
             self.reports[d["id"]] = {**d, "by": tx["actor"], "at": tx["at"]}
         elif kind == "certificate.issue":
-            self.certificates[d["id"]] = {**d, "status": "valid", "revoked_reason": None}
-        elif kind == "certificate.revoke":
+            self.certificates[d["id"]] = {**d, "status": "valid", "revoked_reason": None, "block": idx}
+        elif kind == "certificate.revoke" and d["id"] in self.certificates:
             self.certificates[d["id"]].update(status="revoked", revoked_reason=d["reason"])
 
     # ---- derived views -----------------------------------------------------
@@ -74,7 +72,7 @@ class State:
 
     def results(self, student_id: str) -> dict:
         rows = sorted(
-            (self.result_row(s, c) for s, c in self.enrollments if s == student_id),
+            (self.result_row(s, c) for s, c in self.enrollments if s == student_id and c in self.courses),
             key=lambda r: (r["semester"], r["code"]),
         )
         graded = [r for r in rows if r["points"] is not None]
@@ -84,5 +82,5 @@ class State:
 
     def teaches(self, faculty_id: str, student_id: str) -> bool:
         return any(
-            s == student_id and self.courses[c].get("faculty_id") == faculty_id for s, c in self.enrollments
+            s == student_id and self.courses.get(c, {}).get("faculty_id") == faculty_id for s, c in self.enrollments
         )

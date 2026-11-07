@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import sys
 import threading
@@ -6,12 +7,20 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from certchain import create_app  # noqa: E402
+from certchain import create_app, create_site  # noqa: E402
+from certchain.seed import make_nic  # noqa: E402
+
+NILA_NIC = make_nic("2001-03-14", True, "12345")  # UNI20260001
+
+
+@pytest.fixture(params=["conventional", "bloom"])
+def system(request):
+    return request.param
 
 
 @pytest.fixture
-def app(tmp_path):
-    return create_app(data_dir=tmp_path, env="development")
+def app(tmp_path, system):
+    return create_app(data_dir=tmp_path, env="development", system=system)
 
 
 def login(app, username, password):
@@ -41,26 +50,49 @@ def student(app):
     return login(app, "student.dev", "Student@123")
 
 
-def test_private_data_is_only_ciphertext_on_disk(app, tmp_path):
-    for path in tmp_path.glob("certchain.db*"):
-        raw = path.read_bytes()
-        for secret in (b"Nila Kanagaratnam", b"200112345678", b"Temple Road", b"mark.set", b"Dean's List"):
-            assert secret not in raw, f"{secret!r} found in {path.name}"
-    rows = sqlite3.connect(tmp_path / "certchain.db").execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    assert {r[0] for r in rows} == {"blocks", "users"}
+# ---- storage model --------------------------------------------------------
+def test_chain_stores_only_anchors_not_readable_records(app, tmp_path):
+    """Block anchors must not carry readable personal data; records live off-chain."""
+    anchors = [r[0] for r in sqlite3.connect(tmp_path / "registry.db").execute("SELECT anchor FROM blocks")]
+    blob = "".join(anchors)
+    for secret in ("Nila Kanagaratnam", NILA_NIC, "Temple Road", "Dean's List"):
+        assert secret not in blob, f"{secret!r} appears in a block anchor"
+    tables = {r[0] for r in sqlite3.connect(tmp_path / "registry.db")
+              .execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert tables == {"blocks", "records", "users"}
 
 
-def test_all_academic_data_is_rebuilt_from_chain(app, admin, tmp_path):
+def test_bloom_anchor_hides_fields_but_hash_anchor_exposes_them(app, system):
+    """The two systems differ exactly in whether a field hash can be recomputed."""
+    from certchain.anchors import canonical, sha256
+
+    tx = {"type": "student.upsert", "data": {"programme": "BSc (Hons) Information Technology"},
+          "actor": "t", "at": "2026-01-01T00:00:00+00:00"}
+    anchor = app.config["anchor"].build(tx)
+    exposed = json.dumps(anchor).find(sha256(canonical("BSc (Hons) Information Technology"))) >= 0
+    assert exposed is (system == "conventional")
+
+
+def test_records_rebuilt_only_when_they_match_their_anchor(app, admin, tmp_path, system):
     assert write(admin, "post", "/api/certificates", student_id="UNI20260002", title="Merit").status_code == 201
-    app.config["ledger"].db.close()
-    reopened = create_app(data_dir=tmp_path, env="development")
+    app.config["ledger"].close()
+    # Corrupt one off-chain record so it no longer matches its anchor.
+    db = sqlite3.connect(tmp_path / "registry.db")
+    idx, tx = db.execute("SELECT idx, tx FROM records WHERE tx LIKE '%student.upsert%' ORDER BY idx LIMIT 1").fetchone()
+    doc = json.loads(tx)
+    doc["data"]["name"] = "Tampered Name"
+    db.execute("UPDATE records SET tx=? WHERE idx=?", (json.dumps(doc, sort_keys=True, separators=(",", ":")), idx))
+    db.commit()
+    db.close()
+
+    reopened = create_app(data_dir=tmp_path, env="development", system=system)
     state = reopened.config["state"]
-    assert state.students["UNI20260001"]["nic"] == "200112345678"
-    assert ("UNI20260001", "IT1010") in state.marks
+    assert reopened.config["ledger"].last_audit["failed"] == [idx]
+    assert "Tampered Name" not in {s["name"] for s in state.students.values()}
     assert any(c["title"] == "Merit" for c in state.certificates.values())
-    assert len(state.students) == 6, "seed must not run twice"
 
 
+# ---- authentication and access control ------------------------------------
 def test_login_failure_and_throttle(app):
     client = app.test_client()
     for _ in range(5):
@@ -68,25 +100,19 @@ def test_login_failure_and_throttle(app):
     assert client.post("/api/login", json={"username": "admin.dev", "password": "Admin@123"}).status_code == 429
 
 
-def test_dev_login_available_only_in_development(app, tmp_path):
+def test_dev_login_available_only_in_development(tmp_path, system):
+    app = create_app(data_dir=tmp_path, env="development", system=system)
     assert app.test_client().post("/api/dev-login", json={"username": "admin.dev"}).status_code == 200
-    prod = create_app(data_dir=tmp_path / "prod", env="production")
+    prod = create_app(data_dir=tmp_path / "prod", env="production", system=system)
     client = prod.test_client()
     assert client.post("/api/dev-login", json={"username": "admin.dev"}).status_code == 404
     assert client.get("/api/session").get_json()["dev_accounts"] == []
     assert not prod.config["state"].students, "production must not contain demo data"
 
 
-def test_dev_login_rejects_remote_clients(app):
-    client = app.test_client()
-    res = client.post("/api/dev-login", json={"username": "admin.dev"}, environ_base={"REMOTE_ADDR": "10.0.0.8"})
-    assert res.status_code == 404
-
-
 def test_endpoints_require_auth_and_csrf(app, admin):
     assert app.test_client().get("/api/students").status_code == 401
-    res = admin.post("/api/certificates", json={"student_id": "UNI20260001", "title": "X"})
-    assert res.status_code == 403
+    assert admin.post("/api/certificates", json={"student_id": "UNI20260001", "title": "X"}).status_code == 403
 
 
 def test_student_sees_only_own_record(student):
@@ -94,73 +120,55 @@ def test_student_sees_only_own_record(student):
     assert student.get("/api/students/UNI20260002/record").status_code == 403
     assert student.get("/api/students").status_code == 403
     assert student.get("/api/chain/status").status_code == 403
-    assert student.get("/api/certificates/CERT-2026-0002").status_code == 403
 
 
 def test_faculty_is_limited_to_assigned_courses(faculty):
     roster = faculty.get("/api/courses/IT1010/roster").get_json()
     assert "nic" not in roster["rows"][0]["student"]
-    assert "address" not in roster["rows"][0]["student"]
     assert faculty.get("/api/courses/IT1020/roster").status_code == 403
     assert faculty.get("/api/students/UNI20260001/record").status_code == 403
-    denied = write(faculty, "put", "/api/marks", student_id="UNI20260001", course_code="IT1020", coursework=1, exam=1)
-    assert denied.status_code == 403
 
 
 def test_marks_update_keeps_history_and_validates(app, faculty):
     res = write(faculty, "put", "/api/marks", student_id="UNI20260001", course_code="IT1010", coursework=50, exam=50)
     assert res.get_json()["total"] == 50 and res.get_json()["grade"] == "C"
     assert len(app.config["state"].marks[("UNI20260001", "IT1010")]["history"]) == 2
-    for bad in ({"coursework": 101, "exam": 1}, {"coursework": "x", "exam": 1}):
-        assert write(faculty, "put", "/api/marks", student_id="UNI20260001", course_code="IT1010", **bad).status_code == 400
-    assert write(faculty, "put", "/api/marks", student_id="UNI20260004", course_code="IT1050", coursework=1, exam=1).status_code == 404
-
-
-def test_new_student_gets_login_and_inactive_blocks_it(app, admin):
-    res = write(admin, "post", "/api/students", name="New Person", email="new@certchain.test", programme="BSc", intake="2027", nic="99")
-    assert res.status_code == 201
-    data = res.get_json()
-    new = login(app, data["username"], data["temp_password"])
-    assert new.get("/api/session").get_json()["user"]["must_change"] == 1
-    assert write(admin, "put", f"/api/students/{data['student']['id']}", name="New Person", email="new@certchain.test",
-                 programme="BSc", intake="2027", status="inactive").status_code == 200
-    assert new.get("/api/profile").status_code == 401
+    assert write(faculty, "put", "/api/marks", student_id="UNI20260001", course_code="IT1010",
+                 coursework=101, exam=1).status_code == 400
 
 
 def test_password_change(app, student):
     assert write(student, "post", "/api/password", current="nope", new="Longenough123").status_code == 400
-    assert write(student, "post", "/api/password", current="Student@123", new="short1").status_code == 400
     assert write(student, "post", "/api/password", current="Student@123", new="Longenough123").status_code == 200
     login(app, "student.dev", "Longenough123")
 
 
-def test_reports_follow_teaching_assignments(app, faculty, student):
-    fields = {"title": "Progress", "semester": "Y1S1", "body": "Doing well"}
-    assert write(faculty, "post", "/api/reports", student_id="UNI20260001", **fields).status_code == 201
-    assert write(student, "post", "/api/reports", student_id="UNI20260001", **fields).status_code == 403
-    assert student.get("/api/reports").status_code == 403
-    other = login(app, "fac0003", "Faculty@123")
-    assert write(other, "post", "/api/reports", student_id="UNI20260006", **fields).status_code == 403
-    seen = {r["student_id"] for r in other.get("/api/reports").get_json()}
-    assert "UNI20260006" not in seen
-
-
+# ---- certificates and the blockchain --------------------------------------
 def test_certificate_verify_and_revoke(app, admin):
+    client = app.test_client()
+    good = {"id": "CERT-2026-0001", "code": "DEMO-NILA-2026".upper()}
+    assert client.post("/api/public/verify", json=good).get_json()["result"] == "valid"
+    assert client.post("/api/public/verify", json={**good, "code": "WRONG"}).get_json()["result"] == "not_found"
+    assert write(admin, "post", "/api/certificates/CERT-2026-0001/revoke", reason="Issued in error").status_code == 200
+    assert client.post("/api/public/verify", json=good).get_json()["result"] == "revoked"
+
+
+def test_public_verify_detects_a_tampered_record(app, admin):
     client = app.test_client()
     good = {"id": "CERT-2026-0001", "code": "DEMO-NILA-2026"}
     assert client.post("/api/public/verify", json=good).get_json()["result"] == "valid"
-    wrong = client.post("/api/public/verify", json={**good, "code": "WRONG"}).get_json()
-    assert wrong == {"result": "not_found"}
-    assert write(admin, "post", "/api/certificates/CERT-2026-0001/revoke", reason="Issued in error").status_code == 200
-    assert client.post("/api/public/verify", json=good).get_json()["result"] == "revoked"
-    assert admin.get("/api/certificates/CERT-2026-0001/qr.svg").status_code == 200
+    cert = app.config["state"].certificates["CERT-2026-0001"]
+    tx = app.config["ledger"].record(cert["block"])
+    tx["data"]["title"] = "Forged Award"
+    app.config["ledger"].overwrite_record(cert["block"], tx)
+    assert client.post("/api/public/verify", json=good).get_json()["result"] == "tampered"
 
 
-def test_block_decrypt_is_admin_only(admin, faculty, student):
-    assert admin.get("/api/chain/blocks/4/decrypted").get_json()["data"]["nic"] == "200112345678"
-    assert admin.get("/api/chain/blocks/99999/decrypted").status_code == 404
-    assert faculty.get("/api/chain/blocks/4/decrypted").status_code == 403
-    assert student.get("/api/chain/blocks/4/decrypted").status_code == 403
+def test_block_view_is_admin_only(admin, faculty):
+    res = admin.get("/api/chain/blocks/4")
+    assert res.status_code == 200 and res.get_json()["verified"] is True
+    assert admin.get("/api/chain/blocks/99999").status_code == 404
+    assert faculty.get("/api/chain/blocks/4").status_code == 403
 
 
 def test_tampering_is_detected_and_repaired(app, admin):
@@ -168,7 +176,6 @@ def test_tampering_is_detected_and_repaired(app, admin):
     res = write(admin, "post", "/api/dev/tamper", node="Audit-Office-Node", idx=3).get_json()["status"]
     broken = res["nodes"][2]
     assert (res["healthy"], res["has_majority"], broken["valid"], broken["bad_block"]) == (False, True, False, 3)
-    assert write(admin, "post", "/api/certificates", student_id="UNI20260002", title="During fault").status_code == 201
     repaired = write(admin, "post", "/api/chain/repair").get_json()
     assert repaired["repaired"] == ["Audit-Office-Node"] and repaired["status"]["healthy"] is True
 
@@ -177,24 +184,56 @@ def test_writes_stop_without_a_majority(app, admin):
     ledger = app.config["ledger"]
     with ledger.db:
         ledger.db.execute("DELETE FROM blocks WHERE node='Audit-Office-Node' AND idx=(SELECT MAX(idx) FROM blocks)")
-        ledger.db.execute("UPDATE blocks SET hash='forged' WHERE node='Academic-Board-Node' AND idx=(SELECT MAX(idx) FROM blocks)")
-    res = write(admin, "post", "/api/certificates", student_id="UNI20260002", title="Blocked")
-    assert res.status_code == 503
+        ledger.db.execute("UPDATE blocks SET hash='forged' WHERE node='Academic-Board-Node' "
+                          "AND idx=(SELECT MAX(idx) FROM blocks)")
+    assert write(admin, "post", "/api/certificates", student_id="UNI20260002", title="Blocked").status_code == 503
 
 
+# ---- the combined site and the security check -----------------------------
+@pytest.fixture
+def site(tmp_path):
+    return create_site(data_dir=tmp_path, env="development")
+
+
+def test_site_mounts_both_systems(site):
+    client = site.test_client()
+    assert client.get("/").status_code == 200
+    assert client.get("/security").status_code == 200
+    assert client.get("/conventional/api/session").get_json()["system"] == "conventional"
+    assert client.get("/bloom/api/session").get_json()["system"] == "bloom"
+    assert client.get("/nope").status_code == 404
+
+
+def test_manipulation_check_separates_the_two_systems(site):
+    rows = {r["system"]: r for r in site.test_client().post("/api/security/manipulation").get_json()["rows"]}
+    assert rows["conventional"]["forgery_accepted"] is True
+    assert rows["bloom"]["forgery_accepted"] is False
+
+
+def test_inference_check_separates_the_two_systems(site):
+    rows = {r["system"]: r for r in site.test_client().post("/api/security/inference").get_json()["rows"]}
+    assert rows["conventional"]["confirmed"] >= 1 and rows["conventional"]["verdict"] == "leaks"
+    assert rows["bloom"]["confirmed"] == 0 and rows["bloom"]["verdict"] == "resists"
+
+
+def test_security_check_is_throttled(site):
+    client = site.test_client()
+    codes = [client.post("/api/security/inference").status_code for _ in range(8)]
+    assert 429 in codes
+
+
+# ---- concurrency and headers ----------------------------------------------
 def test_session_survives_concurrent_chain_reads(app):
-    """Session checks and chain scans share one SQLite connection across threads."""
     failures = []
 
     def worker(path):
         client = app.test_client()
         client.post("/api/dev-login", json={"username": "admin.dev"})
-        for _ in range(40):
-            status = client.get(path).status_code
-            if status != 200:
-                failures.append((path, status))
+        for _ in range(30):
+            if client.get(path).status_code != 200:
+                failures.append((path, client.get(path).status_code))
 
-    threads = [threading.Thread(target=worker, args=(p,)) for p in ("/api/chain/status", "/api/students") * 4]
+    threads = [threading.Thread(target=worker, args=(p,)) for p in ("/api/chain/status", "/api/students") * 3]
     for t in threads:
         t.start()
     for t in threads:

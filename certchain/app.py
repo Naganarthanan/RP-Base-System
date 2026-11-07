@@ -1,4 +1,9 @@
-"""CertChain web application: authentication, role checks and the JSON API."""
+"""CertChain web application.
+
+create_app() builds one registry (the conventional or the Bloom filter system) with
+its own database, logins and JSON API. create_site() mounts both under /conventional
+and /bloom next to the landing page and the public security check.
+"""
 import io
 import os
 import secrets
@@ -9,13 +14,16 @@ from urllib.parse import quote
 
 import qrcode
 import qrcode.image.svg
-from flask import Flask, jsonify, request, send_file, send_from_directory, session
+from flask import Flask, jsonify, redirect, request, send_file, send_from_directory, session
+from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .app_support import (
     CODE, DEV_ACCOUNTS, ApiError, Throttle, check_date, check_email, check_password, clean,
 )
-from .crypto import Keys
+from .anchors import SYSTEM_LABELS, SYSTEMS, make_anchor
+from .bloom import BloomFilter
+from .keys import Keys
 from .ledger import NODES, Ledger, LedgerError
 from .state import COURSEWORK_WEIGHT, EXAM_WEIGHT, GRADE_SCALE, State
 
@@ -24,15 +32,43 @@ DUMMY_HASH = generate_password_hash("timing-equaliser-not-a-real-password")
 LOOPBACK = {"127.0.0.1", "::1"}
 
 
-def create_app(data_dir=None, env=None, seed_demo=True, public_url=None) -> Flask:
+def add_security_headers(app: Flask) -> None:
+    @app.after_request
+    def security_headers(resp):
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        )
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        if "/api/" in request.path:
+            resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+
+def cert_key(cert_id: str, code: str) -> str:
+    return f"certificate|{cert_id}|{code}"
+
+
+def create_app(data_dir=None, env=None, seed_demo=True, public_url=None, system="conventional",
+               prefix="", seed_users=True) -> Flask:
+    if system not in SYSTEMS:
+        raise ValueError(f"unknown system {system!r}")
     env = env or os.environ.get("APP_ENV", "development")
     dev = env == "development"
-    data = Path(data_dir or os.environ.get("CERTCHAIN_DATA", BASE / "data"))
+    data = Path(data_dir or Path(os.environ.get("CERTCHAIN_DATA", BASE / "data")) / system)
     keys = Keys.load_or_create(data / "keys.json")
-    ledger = Ledger(data / "certchain.db", keys)
+    anchor = make_anchor(system, keys.bloom_key)
+    ledger = Ledger(data / "registry.db", anchor)
     state = State()
-    for tx in ledger.majority_transactions():
-        state.apply(tx)
+    for idx, tx in ledger.verified_transactions():
+        state.apply(tx, idx)
+    # Bloom filter system: an index of every issued certificate, so a public check can
+    # reject an unknown ID and code from the filter alone.
+    cert_index = BloomFilter(1 << 16, 10, keys.bloom_key) if system == "bloom" else None
+    if cert_index is not None:
+        for c in state.certificates.values():
+            cert_index.add(cert_key(c["id"], c["code"]))
 
     app = Flask(__name__, static_folder=str(BASE / "static"), static_url_path="/static")
     app.config.update(
@@ -40,17 +76,21 @@ def create_app(data_dir=None, env=None, seed_demo=True, public_url=None) -> Flas
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Strict",
         SESSION_COOKIE_SECURE=not dev,
-        SESSION_COOKIE_NAME="certchain_session",
+        SESSION_COOKIE_NAME=f"certchain_{system}",
+        SESSION_COOKIE_PATH=prefix or "/",
         MAX_CONTENT_LENGTH=1024 * 1024,
-        PUBLIC_URL=(public_url or os.environ.get("PUBLIC_URL", "http://127.0.0.1:5000")).rstrip("/"),
+        PUBLIC_URL=(public_url or os.environ.get("PUBLIC_URL", "http://127.0.0.1:5000")).rstrip("/") + prefix,
+        SYSTEM=system,
     )
     login_throttle, verify_throttle = Throttle(5, 300), Throttle(30, 60)
 
     # ---- helpers -----------------------------------------------------------
     def commit(kind: str, data_: dict, actor: str | None = None) -> dict:
         actor = actor or (current_user() or {}).get("username", "system")
-        tx = ledger.append(kind, data_, actor)
-        state.apply(tx)
+        idx, tx = ledger.append(kind, data_, actor)
+        state.apply(tx, idx)
+        if cert_index is not None and kind == "certificate.issue":
+            cert_index.add(cert_key(data_["id"], data_["code"]))
         return tx
 
     def add_user(username, password, role, subject_id, must_change=True):
@@ -63,6 +103,7 @@ def create_app(data_dir=None, env=None, seed_demo=True, public_url=None) -> Flas
 
     app.config["commit"], app.config["add_user"] = commit, add_user
     app.config["ledger"], app.config["state"] = ledger, state
+    app.config["anchor"], app.config["keys"], app.config["cert_index"] = anchor, keys, cert_index
 
     def current_user():
         username = session.get("username")
@@ -152,17 +193,7 @@ def create_app(data_dir=None, env=None, seed_demo=True, public_url=None) -> Flas
     def on_413(_):
         return jsonify(error="request is too large"), 413
 
-    @app.after_request
-    def security_headers(resp):
-        resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-        )
-        resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["X-Frame-Options"] = "DENY"
-        resp.headers["Referrer-Policy"] = "no-referrer"
-        if request.path.startswith("/api/"):
-            resp.headers["Cache-Control"] = "no-store"
-        return resp
+    add_security_headers(app)
 
     # ---- pages -------------------------------------------------------------
     @app.get("/")
@@ -179,6 +210,8 @@ def create_app(data_dir=None, env=None, seed_demo=True, public_url=None) -> Flas
             csrf=session.get("csrf") if user else None,
             dev_accounts=DEV_ACCOUNTS if dev_login_allowed() else [],
             env=env,
+            system=system,
+            system_label=SYSTEM_LABELS[system],
         )
 
     @app.post("/api/login")
@@ -237,7 +270,8 @@ def create_app(data_dir=None, env=None, seed_demo=True, public_url=None) -> Flas
             return jsonify(
                 students=len(state.students), faculty=len(state.faculty), courses=len(state.courses),
                 certificates=len(state.certificates), marks=len(state.marks),
-                chain={"healthy": chain["healthy"], "height": chain["height"], "nodes": len(NODES)},
+                chain={"healthy": chain["healthy"], "height": chain["height"], "nodes": len(NODES),
+                       "rejected": len(ledger.last_audit["failed"])},
             )
         if user["role"] == "faculty":
             mine = [c for c in state.courses.values() if c.get("faculty_id") == user["subject_id"]]
@@ -532,10 +566,15 @@ def create_app(data_dir=None, env=None, seed_demo=True, public_url=None) -> Flas
             raise ApiError(429, "too many checks, try again in a minute")
         verify_throttle.hit(ip)
         d = body()
-        cert = state.certificates.get(str(d.get("id", "")).strip())
+        cert_id = str(d.get("id", "")).strip()
         code = str(d.get("code", "")).strip().upper()
+        if cert_index is not None and cert_key(cert_id, code) not in cert_index:
+            return jsonify(result="not_found")
+        cert = state.certificates.get(cert_id)
         if not cert or not secrets.compare_digest(cert["code"].encode(), code.encode()):
             return jsonify(result="not_found")
+        if cert["block"] is None or not ledger.verify_record(cert["block"]):
+            return jsonify(result="tampered")
         return jsonify(
             result=cert["status"],
             certificate={
@@ -559,19 +598,15 @@ def create_app(data_dir=None, env=None, seed_demo=True, public_url=None) -> Flas
         node = request.args.get("node", NODES[0])
         if node not in NODES:
             raise ApiError(404, "node not found")
-        return jsonify(blocks=ledger.rows(node, limit, offset, newest_first=True), dev=dev)
+        return jsonify(blocks=ledger.rows(node, limit, offset, newest_first=True), dev=dev, system=system)
 
-    @app.get("/api/chain/blocks/<int:idx>/decrypted")
+    @app.get("/api/chain/blocks/<int:idx>")
     @require("admin")
-    def chain_block_decrypted(user, idx):
-        status = ledger.status()
-        source = next((n["node"] for n in status["nodes"] if n["in_consensus"]), None)
-        if not source:
-            raise LedgerError("No majority of nodes agree on a valid chain.")
-        block = ledger.rows(source, 1, idx)
-        if not block:
+    def chain_block(user, idx):
+        anchors = ledger.anchors()
+        if idx not in anchors:
             raise ApiError(404, "block not found")
-        return jsonify(keys.decrypt(block[0]["nonce"], block[0]["ciphertext"], str(idx)))
+        return jsonify(anchor=anchors[idx], record=ledger.record(idx), verified=ledger.verify_record(idx))
 
     @app.post("/api/chain/repair")
     @require("admin")
@@ -590,9 +625,50 @@ def create_app(data_dir=None, env=None, seed_demo=True, public_url=None) -> Flas
         return jsonify(status=ledger.status())
 
     # ---- demo data ---------------------------------------------------------
-    is_empty = ledger.db.execute("SELECT 1 FROM users LIMIT 1").fetchone() is None
+    is_empty = ledger.db.execute("SELECT COUNT(*) FROM records").fetchone()[0] <= 1
     if dev and seed_demo and is_empty:
         from .seed import seed
-        seed(app)
+        seed(app, users=seed_users)
 
     return app
+
+
+def create_site(data_dir=None, env=None, public_url=None) -> Flask:
+    """The landing page and security check, with each system mounted under its own path."""
+    data = Path(data_dir or os.environ.get("CERTCHAIN_DATA", BASE / "data"))
+    systems = {name: create_app(data / name, env=env, public_url=public_url, system=name, prefix=f"/{name}")
+               for name in SYSTEMS}
+    site = Flask(__name__, static_folder=str(BASE / "static"), static_url_path="/static")
+    site.config.update(MAX_CONTENT_LENGTH=64 * 1024, SYSTEMS=systems)
+    security_throttle = Throttle(6, 60)
+    add_security_headers(site)
+
+    @site.get("/")
+    @site.get("/security")
+    def landing():
+        return send_from_directory(site.static_folder, "index.html")
+
+    @site.get("/<name>")
+    def system_root(name):
+        if name not in SYSTEMS:
+            return jsonify(error="not found"), 404
+        return redirect(f"/{name}/")
+
+    @site.post("/api/security/<kind>")
+    def security_check(kind):
+        from .attacks import run_inference, run_manipulation
+        runners = {"manipulation": run_manipulation, "inference": run_inference}
+        if kind not in runners:
+            return jsonify(error="unknown check"), 404
+        ip = request.remote_addr or "unknown"
+        if security_throttle.blocked(ip):
+            return jsonify(error="too many checks, try again in a minute"), 429
+        security_throttle.hit(ip)
+        return jsonify(runners[kind]())
+
+    @site.errorhandler(404)
+    def on_404(_):
+        return jsonify(error="not found"), 404
+
+    site.wsgi_app = DispatcherMiddleware(site.wsgi_app, {f"/{n}": a.wsgi_app for n, a in systems.items()})
+    return site

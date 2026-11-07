@@ -1,9 +1,22 @@
 """Fictional demo data, loaded only in development. It is written through the chain."""
+from datetime import date
+
 from .app_support import DEV_ACCOUNTS
 
 
-def seed(app) -> None:
-    add_user, commit = app.config["add_user"], app.config["commit"]
+def nic_day_code(dob: str, female: bool) -> str:
+    """Day-of-year part of a 12-digit Sri Lankan NIC (YYYY DDD NNNNN); women add 500."""
+    born = date.fromisoformat(dob)
+    return f"{born.timetuple().tm_yday + (500 if female else 0):03d}"
+
+
+def make_nic(dob: str, female: bool, serial: str) -> str:
+    return dob[:4] + nic_day_code(dob, female) + serial
+
+
+def seed(app, users: bool = True) -> None:
+    commit = app.config["commit"]
+    add_user = app.config["add_user"] if users else (lambda *a, **k: None)
     for account in DEV_ACCOUNTS:
         if account["role"] == "admin":
             add_user(account["username"], account["password"], "admin", None, must_change=False)
@@ -22,14 +35,15 @@ def seed(app) -> None:
 
     programme = "BSc (Hons) Information Technology"
     people = [
-        ("UNI20260001", "Nila Kanagaratnam", "200112345678", "2001-03-14", "12 Temple Road, Jaffna"),
-        ("UNI20260002", "Kavin Sutharsan", "200287654321", "2002-07-02", "48 Hospital Road, Vavuniya"),
-        ("UNI20260003", "Aisha Farook", "200145612378", "2001-11-23", "7 Lake View, Kilinochchi"),
-        ("UNI20260004", "Dilan Perera", "200278945612", "2002-01-30", "21 Station Road, Mannar"),
-        ("UNI20260005", "Priya Nadarajah", "200165498732", "2001-09-09", "3 College Lane, Jaffna"),
-        ("UNI20260006", "Ravi Selvam", "200232165498", "2002-05-18", "90 Main Street, Mullaitivu"),
+        ("UNI20260001", "Nila Kanagaratnam", True, "12345", "2001-03-14", "12 Temple Road, Jaffna"),
+        ("UNI20260002", "Kavin Sutharsan", False, "87654", "2002-07-02", "48 Hospital Road, Vavuniya"),
+        ("UNI20260003", "Aisha Farook", True, "45612", "2001-11-23", "7 Lake View, Kilinochchi"),
+        ("UNI20260004", "Dilan Perera", False, "78945", "2002-01-30", "21 Station Road, Mannar"),
+        ("UNI20260005", "Priya Nadarajah", True, "65498", "2001-09-09", "3 College Lane, Jaffna"),
+        ("UNI20260006", "Ravi Selvam", False, "32165", "2002-05-18", "90 Main Street, Mullaitivu"),
     ]
-    for n, (sid, name, nic, dob, address) in enumerate(people, start=1):
+    for n, (sid, name, female, serial, dob, address) in enumerate(people, start=1):
+        nic = make_nic(dob, female, serial)
         commit("student.upsert", {"id": sid, "name": name, "email": f"student{n}@certchain.test", "phone": f"+94 76 000 20{n:02d}",
                                   "nic": nic, "dob": dob, "address": address, "programme": programme,
                                   "intake": "2026 January", "status": "active"}, "seed")

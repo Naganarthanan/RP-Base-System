@@ -3,6 +3,45 @@ const root = document.getElementById("app");
 const dialog = document.getElementById("dialog");
 let session = { user: null, csrf: null, dev_accounts: [], env: "" };
 
+// Each registry is mounted under its own path (/conventional, /bloom); the landing
+// page and security check live at the site root. BASE prefixes every API call and link.
+const SYSTEMS = ["conventional", "bloom"];
+const SYSTEM_LABELS = { conventional: "Conventional system", bloom: "Bloom filter system" };
+const firstSegment = location.pathname.split("/")[1];
+const BASE = SYSTEMS.includes(firstSegment) ? "/" + firstSegment : "";
+
+// ---- light / dark theme ---------------------------------------------------
+const THEME_ICONS = {
+  // Shown icon is the mode you switch TO.
+  dark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>',
+  light: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></svg>',
+};
+const currentTheme = () => document.documentElement.dataset.theme || "light";
+function applyTheme(mode) {
+  document.documentElement.dataset.theme = mode;
+  const markup = mode === "dark" ? THEME_ICONS.light : THEME_ICONS.dark;
+  ["theme-toggle", "theme-top"].forEach((id) => {
+    const btn = document.getElementById(id);
+    if (btn) {
+      btn.innerHTML = markup;
+      btn.title = mode === "dark" ? "Switch to light mode" : "Switch to dark mode";
+    }
+  });
+}
+function toggleTheme() {
+  const mode = currentTheme() === "dark" ? "light" : "dark";
+  try { localStorage.setItem("theme", mode); } catch (_) { /* private mode */ }
+  applyTheme(mode);
+}
+function setupTheme() {
+  let stored = null;
+  try { stored = localStorage.getItem("theme"); } catch (_) { /* private mode */ }
+  applyTheme(stored || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+  const btn = document.getElementById("theme-toggle");
+  if (btn) btn.onclick = toggleTheme;
+}
+setupTheme();
+
 // ---- utilities ------------------------------------------------------------
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const dash = (v) => (v === null || v === undefined || v === "" ? "–" : esc(v));
@@ -13,7 +52,7 @@ async function api(path, method = "GET", body) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (session.csrf) headers["X-CSRF-Token"] = session.csrf;
-  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(BASE + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401 && session.user) { session.user = null; route(); }
@@ -149,20 +188,26 @@ const ICONS = {
   profile: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-5 4-7 8-7s7 2 8 7"/>',
   lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3Z"/><path d="m9 12 2 2 4-4"/>',
+  theme: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
 };
 const icon = (name) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ""}</svg>`;
 
 // ---- sign in and public verification -----------------------------------------
 function renderLogin(error = "") {
+  document.documentElement.classList.remove("app-shell");
   const quick = session.dev_accounts.length ? `<section class="card stack">
       <div class="row spread"><h2>Quick login</h2><span class="dev-tag">DEV ONLY</span></div>
       <div class="quick">${session.dev_accounts.map((a) => `<button class="btn" data-dev="${esc(a.username)}"><span>${esc(a.label)}</span><span class="mono">${esc(a.username)} / ${esc(a.password)}</span></button>`).join("")}</div>
     </section>` : "";
+  const label = session.system_label || SYSTEM_LABELS[firstSegment] || "Academic Registry";
   root.innerHTML = `<div class="auth-split"><aside class="auth-side">
-      <div class="brand"><span class="brand-mark">${icon("shield")}</span><span>CertChain<small>Academic Registry</small></span></div>
+      <div class="brand"><span class="brand-mark">${icon("shield")}</span><span>CertChain<small>${esc(label)}</small></span></div>
       <h1>All university records in one secure place</h1>
       <ul class="auth-points">
-        <li>${icon("lock")}<span>Student, faculty and academic records are encrypted on the chain</span></li>
+        <li>${icon("lock")}<span>Every record is anchored on the chain and checked for tampering</span></li>
         <li>${icon("chain")}<span>Every change is added as a linked, signed block</span></li>
         <li>${icon("award")}<span>Certificates can be verified publicly with their ID and code</span></li>
       </ul>
@@ -171,10 +216,13 @@ function renderLogin(error = "") {
     <form class="card stack" id="login">
       <label class="field">Username<input name="username" autocomplete="username" required autofocus></label>
       <label class="field">Password<input name="password" type="password" autocomplete="current-password" required></label>
-      <p class="form-error" role="alert">${esc(error)}</p>
+      ${error ? `<p class="form-error" role="alert">${esc(error)}</p>` : ""}
       <button class="btn primary" type="submit">Sign in</button>
     </form>${quick}
-    <p class="small muted"><a href="/verify">Verify a certificate</a></p>
+    <div class="auth-links">
+      <a class="btn" href="${BASE}/verify">${icon("award")}<span>Verify a certificate</span></a>
+      <a class="btn" href="/">${icon("grid")}<span>All systems</span></a>
+    </div>
   </div></main></div>`;
   root.querySelector("#login").onsubmit = async (e) => {
     e.preventDefault();
@@ -190,6 +238,7 @@ function renderLogin(error = "") {
 }
 
 function renderVerify() {
+  document.documentElement.classList.remove("app-shell");
   const params = new URLSearchParams(location.hash.slice(1));
   root.innerHTML = `<main class="auth"><div class="auth-box">
     <div class="title"><h1>Verify a certificate</h1><p class="muted">Enter the ID and verification code printed on the certificate.</p></div>
@@ -199,7 +248,10 @@ function renderVerify() {
       <button class="btn primary" type="submit">Verify</button>
     </form>
     <div id="verify-result" aria-live="polite"></div>
-    <p class="small"><a href="/">Back to sign in</a></p>
+    <div class="auth-links">
+      <a class="btn" href="${BASE}/">${icon("logout")}<span>Back to sign in</span></a>
+      <a class="btn" href="/">${icon("grid")}<span>All systems</span></a>
+    </div>
   </div></main>`;
   const form = root.querySelector("#verify");
   const out = root.querySelector("#verify-result");
@@ -208,12 +260,165 @@ function renderVerify() {
     try {
       const r = await api("/api/public/verify", "POST", Object.fromEntries(new FormData(form)));
       if (r.result === "not_found") { out.innerHTML = `<div class="card stack"><span class="row"><span class="badge bad">Not verified</span></span><p>No certificate matches this ID and code.</p></div>`; return; }
+      if (r.result === "tampered") { out.innerHTML = `<div class="card stack"><span class="row"><span class="badge bad">Tampered</span></span><p>This certificate's record no longer matches its entry on the blockchain, so it cannot be trusted.</p></div>`; return; }
       const c = r.certificate;
       out.innerHTML = `<div class="card stack">${r.result === "valid" ? `<span class="row"><span class="badge ok">Verified</span></span>` : `<span class="row"><span class="badge bad">Revoked</span></span>`}
         <dl class="kv"><dt>Holder</dt><dd>${esc(c.holder)}</dd><dt>Award</dt><dd>${esc(c.title)}</dd><dt>Programme</dt><dd>${esc(c.programme)}</dd><dt>Issued</dt><dd>${esc(c.issued_on)}</dd><dt>ID</dt><dd>${esc(c.id)}</dd></dl></div>`;
     } catch (err) { out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`; }
   };
   if (params.get("id") && params.get("code")) form.requestSubmit();
+}
+
+// ---- landing page and security check -----------------------------------------
+function renderLanding() {
+  document.documentElement.classList.remove("app-shell");
+  if (location.pathname.replace(/\/+$/, "").endsWith("/security")) { renderSecurity(); return; }
+  const card = (href, ic, title, desc, tag) => `<a class="home-card" href="${href}">
+      <span class="home-ic">${icon(ic)}</span>
+      <span class="home-body"><strong>${esc(title)}</strong><span class="muted small">${esc(desc)}</span>
+        ${tag ? `<span class="badge">${esc(tag)}</span>` : ""}</span></a>`;
+  root.innerHTML = `<main class="home">
+    <header class="home-head">
+      <div class="brand"><span class="brand-mark">${icon("shield")}</span><span>CertChain<small>Academic Registry</small></span></div>
+      <h1>A blockchain academic registry, in two designs</h1>
+      <p class="muted">The same university records system, built two ways, so the two can be compared under the same attacks.</p>
+    </header>
+    <div class="home-grid">
+      ${card("/conventional/", "chain", "Conventional system", "Records anchored on-chain with plain SHA-256 hashing.", "Hashing")}
+      ${card("/bloom/", "lock", "Bloom filter system", "Records anchored with keyed Bloom filters over hashing.", "Hashing + Bloom filter")}
+      ${card("/security", "shield", "Security check", "Run the manipulation and inference checks across both systems. No sign-in needed.", "")}
+    </div>
+    <p class="small muted home-foot">Each system has its own sign-in. Use the quick-login buttons in development.</p>
+  </main>`;
+}
+
+// The two checks, each with its attack and defence strategies. Strategies are UI
+// scaffolding: each is a separate component to be wired to its own backend later.
+const SECURITY = {
+  manipulation: {
+    title: "Manipulation", icon: "chain",
+    question: "Can a forged record be made to pass on-chain verification?",
+    target: "conventional", targetLabel: "Conventional system",
+    attacks: [
+      { id: "asset", name: "Asset substitution", desc: "Swap the logo, seal or signature on a certificate." },
+      { id: "field", name: "Field rewrite", desc: "Edit a record field and recompute its hash." },
+      { id: "node", name: "Node copy rewrite", desc: "A compromised organisation rewrites its own chain copy." },
+      { id: "qr", name: "QR / metadata swap", desc: "Repoint the QR code or alter the file metadata." },
+    ],
+    defenses: [
+      { id: "vertical", name: "Vertical partitioning", desc: "Split anchors across linked blocks (inter-block)." },
+      { id: "forensic", name: "OCR / forensic asset check", desc: "Verify the logo, seal and signature images." },
+      { id: "consensus", name: "Consensus threshold", desc: "Require more nodes to agree before accepting." },
+      { id: "keyed", name: "Keyed anchor (HMAC)", desc: "Sign each anchor with a secret key." },
+    ],
+  },
+  inference: {
+    title: "Inference", icon: "lock",
+    question: "Can someone holding the chain confirm a guessed value without the key?",
+    target: "bloom", targetLabel: "Bloom filter system",
+    attacks: [
+      { id: "dictionary", name: "Dictionary attack", desc: "Hash candidate values and match them to the chain." },
+      { id: "fieldmatch", name: "Per-field match leak", desc: "Read which field differs from a verify response." },
+      { id: "frequency", name: "Frequency analysis", desc: "Count repeated hashes to rank likely values." },
+      { id: "rainbow", name: "Rainbow table", desc: "Look up precomputed hashes of common values." },
+    ],
+    defenses: [
+      { id: "keyedbloom", name: "Keyed Bloom filter", desc: "Derive bit positions from HMAC under a secret key." },
+      { id: "salt", name: "Salted hashing", desc: "Add a per-record salt before hashing each field." },
+      { id: "horizontal", name: "Horizontal partitioning", desc: "Split fields across records (intra-block)." },
+      { id: "padding", name: "Field padding / k-anonymity", desc: "Pad the filter so field counts do not leak." },
+    ],
+  },
+};
+
+let securityTab = "manipulation";
+
+function picklist(kind, items) {
+  return items.map((s) => `<label class="pick">
+      <input type="checkbox" data-kind="${kind}" value="${esc(s.id)}">
+      <span class="pick-body"><strong>${esc(s.name)}</strong><span class="small muted">${esc(s.desc)}</span></span></label>`).join("");
+}
+
+function renderSecurity() {
+  document.documentElement.classList.remove("app-shell");
+  const c = SECURITY[securityTab];
+  const tabs = Object.entries(SECURITY).map(([key, v]) =>
+    `<button class="seg-btn ${key === securityTab ? "active" : ""}" data-tab="${key}">${icon(v.icon)}<span>${esc(v.title)}</span></button>`).join("");
+  root.innerHTML = `<main class="home security">
+    <header class="home-head">
+      <a class="btn back-btn" href="/">${icon("grid")}<span>All systems</span></a>
+      <h1>Security check</h1>
+      <p class="muted">Pick a check, then choose attack and defence strategies and run. Run with no defence selected first to see the system as it is. Nothing here recovers real personal details.</p>
+    </header>
+    <div class="seg" role="tablist">${tabs}</div>
+    <section class="card stack">
+      <div class="row spread"><div><h2>${esc(c.title)}</h2><p class="small muted">${esc(c.question)}</p></div>
+        <span class="badge">Analysed on the ${esc(c.targetLabel)}</span></div>
+      <div class="panes">
+        <div class="pane attack"><div class="pane-head"><h3>Attack strategies</h3><span class="tag-red">Red team</span></div>${picklist("attack", c.attacks)}</div>
+        <div class="pane defense"><div class="pane-head"><h3>Defence strategies</h3><span class="tag-green">Blue team</span></div>${picklist("defense", c.defenses)}</div>
+      </div>
+      <div class="row spread">
+        <span class="small muted" id="sec-summary">No defence selected — baseline run.</span>
+        <button class="btn primary" id="sec-run">Run ${esc(c.title.toLowerCase())} check</button>
+      </div>
+    </section>
+    <section id="sec-out" class="stack" aria-live="polite"></section>
+  </main>`;
+
+  const out = root.querySelector("#sec-out");
+  const summary = root.querySelector("#sec-summary");
+  const picked = (kind) => [...root.querySelectorAll(`input[data-kind="${kind}"]:checked`)];
+  const nameOf = (kind, id) => (kind === "attack" ? c.attacks : c.defenses).find((s) => s.id === id).name;
+
+  const updateSummary = () => {
+    const d = picked("defense").map((i) => i.value);
+    summary.textContent = d.length
+      ? `${d.length} defence${d.length === 1 ? "" : "s"} selected — scaffold run.`
+      : "No defence selected — baseline run.";
+  };
+  root.querySelectorAll('input[type="checkbox"]').forEach((i) => { i.onchange = updateSummary; });
+
+  root.querySelectorAll("[data-tab]").forEach((b) => {
+    b.onclick = () => { securityTab = b.dataset.tab; renderSecurity(); };
+  });
+
+  root.querySelector("#sec-run").onclick = async (e) => {
+    const button = e.currentTarget;
+    const attacks = picked("attack").map((i) => i.value);
+    const defenses = picked("defense").map((i) => i.value);
+    const chips = (kind, ids) => ids.length
+      ? ids.map((id) => `<span class="badge">${esc(nameOf(kind, id))}</span>`).join(" ")
+      : `<span class="small muted">none</span>`;
+    const selection = `<div class="card stack"><div class="row spread"><h3>${esc(c.title)} run · ${esc(c.targetLabel)}</h3></div>
+      <div class="sel-row"><span class="small muted">Attack</span><div class="row">${chips("attack", attacks)}</div></div>
+      <div class="sel-row"><span class="small muted">Defence</span><div class="row">${chips("defense", defenses)}</div></div></div>`;
+
+    if (defenses.length) {
+      // Defences are not wired to a backend yet: show the selection as a scaffold.
+      out.innerHTML = selection + `<div class="card stack"><div class="row"><span class="badge warn">Not connected yet</span></div>
+        <p>These strategies are placeholder components. Connect each one to its backend and return its result here. The baseline (no defence) run already works below.</p></div>`;
+      out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = "Running…";
+    try {
+      const data = await api(`/api/security/${securityTab}`, "POST", {});
+      const row = data.rows.find((r) => r.system === c.target) || data.rows[0];
+      const kind = { resisted: "ok", resists: "ok", vulnerable: "bad", leaks: "bad" }[row.verdict] || "";
+      out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Baseline result · ${esc(c.targetLabel)}</h3><span class="badge ${kind}">${esc(row.verdict)}</span></div>
+        <p class="small muted">${esc(data.scenario)}</p>
+        ${securityTab === "inference" ? `<p class="small muted">Confirmed ${row.confirmed} of ${row.guesses} guesses without the key.</p>` : ""}
+        <p>${esc(row.detail)}</p></div>
+        <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
+      out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (err) {
+      out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;
+    } finally { button.disabled = false; button.textContent = original; }
+  };
 }
 
 // ---- application shell -----------------------------------------------------
@@ -224,17 +429,48 @@ const NAV = {
 };
 
 function shell(page, content) {
+  document.documentElement.classList.add("app-shell");
   const u = session.user;
   const items = NAV[u.role].map(([key, label]) => `<a href="#/${key}" class="${page === key ? "active" : ""}" ${page === key ? 'aria-current="page"' : ""}>${icon(key)}<span>${esc(label)}</span></a>`).join("");
+  const section = (NAV[u.role].find(([k]) => k === page) || [])[1] || (page ? page[0].toUpperCase() + page.slice(1) : "");
   root.innerHTML = `<div class="shell">
-    <aside class="sidebar"><div class="brand"><span class="brand-mark">${icon("shield")}</span><span>CertChain<small>Academic Registry</small></span></div>
+    <aside class="sidebar"><div class="brand"><span class="brand-mark">${icon("shield")}</span><span>CertChain<small>${esc(session.system_label || "Academic Registry")}</small></span></div>
       <nav class="nav" aria-label="Main">${items}</nav>
-      <div class="who"><div><strong>${esc(u.username)}</strong><br><span>${esc(u.role)}</span></div>
-        <div class="row"><button id="pw">Change password</button><button id="logout">Sign out</button></div></div>
     </aside>
-    <main class="main" id="main">${u.must_change ? `<div class="banner"><span>You are using a temporary password.</span><button class="btn small" id="pw-banner">Change password</button></div>` : ""}${content}</main>
+    <div class="content">
+      <header class="topbar">
+        <span class="crumb">${esc(section || "")}</span>
+        <div class="topbar-right">
+          <button class="icon-btn" id="theme-top" type="button" aria-label="Switch theme" title="Switch theme"></button>
+          <div class="usermenu" id="usermenu">
+            <button class="usermenu-btn" id="usermenu-btn" aria-haspopup="true" aria-expanded="false">
+              <span class="avatar sm">${esc(u.username.slice(0, 1))}</span>
+              <span class="um-meta"><strong title="${esc(u.username)}">${esc(u.username)}</strong><span class="role-tag">${esc(u.role)}</span></span>
+              ${icon("chevron")}
+            </button>
+            <div class="menu" role="menu">
+              <a class="menu-item" href="#/profile" id="to-profile" role="menuitem">${icon("profile")}<span>Profile</span></a>
+              <a class="menu-item" href="/" role="menuitem">${icon("grid")}<span>All systems</span></a>
+              <button class="menu-item" id="logout" role="menuitem">${icon("logout")}<span>Sign out</span></button>
+            </div>
+          </div>
+        </div>
+      </header>
+      <main class="main" id="main">${u.must_change ? `<div class="banner"><span>You are using a temporary password.</span><button class="btn small" id="pw-banner">Change password</button></div>` : ""}${content}</main>
+    </div>
   </div>`;
-  root.querySelector("#pw").onclick = changePassword;
+
+  const menu = root.querySelector("#usermenu");
+  const menuBtn = root.querySelector("#usermenu-btn");
+  const setOpen = (open) => { menu.classList.toggle("open", open); menuBtn.setAttribute("aria-expanded", String(open)); };
+  menuBtn.onclick = (e) => { e.stopPropagation(); setOpen(!menu.classList.contains("open")); };
+  if (shell._closeMenu) document.removeEventListener("click", shell._closeMenu);
+  shell._closeMenu = (e) => { const m = document.querySelector("#usermenu"); if (m && !m.contains(e.target)) m.classList.remove("open"); };
+  document.addEventListener("click", shell._closeMenu);
+
+  root.querySelector("#theme-top").onclick = toggleTheme;
+  applyTheme(currentTheme());  // paint the header toggle's icon for this render
+  root.querySelector("#to-profile").onclick = () => setOpen(false);
   const bannerButton = root.querySelector("#pw-banner");
   if (bannerButton) bannerButton.onclick = changePassword;
   const nav = root.querySelector(".nav");
@@ -242,6 +478,7 @@ function shell(page, content) {
   if (activeLink) nav.scrollLeft = activeLink.offsetLeft - nav.offsetLeft - 16;
   bindSearch();
   root.querySelector("#logout").onclick = async () => {
+    setOpen(false);
     await api("/api/logout", "POST", {});
     clearTimeout(toast.timer);
     document.getElementById("toast").hidden = true;
@@ -292,7 +529,7 @@ const pages = {
       shell("overview", `${pageHead("University overview", "Live totals from the blockchain.")}
         ${d.chain.healthy ? "" : `<div class="banner bad">A blockchain node has failed its integrity check. <a href="#/chain">Review it</a>.</div>`}
         <div class="stats">${statCard(d.students, "Students", "#/students")}${statCard(d.faculty, "Faculty", "#/faculty")}${statCard(d.courses, "Courses", "#/courses")}${statCard(d.marks, "Results recorded")}${statCard(d.certificates, "Certificates", "#/certificates")}${statCard(d.chain.height, "Blocks on chain", "#/chain")}</div>
-        <section class="card row spread"><div><h2>Blockchain status</h2><p class="muted">${d.chain.nodes} nodes hold a full encrypted copy of all records.</p></div>
+        <section class="card row spread"><div><h2>Blockchain status</h2><p class="muted">${d.chain.nodes} nodes each hold a full copy of the chain of anchors.</p></div>
         ${d.chain.healthy ? `<span class="badge ok">All nodes in consensus</span>` : `<span class="badge bad">Attention needed</span>`}</section>`);
     } else if (role === "faculty") {
       const rows = d.courses;
@@ -476,7 +713,7 @@ const pages = {
 
   async certificate(id) {
     const c = await api(`/api/certificates/${enc(id)}`);
-    shell("certificates", `${backLink("#/certificates", "All certificates")}${pageHead("Certificate", c.id, `<a class="btn" href="/verify#id=${enc(c.id)}&code=${enc(c.code)}">Open public check</a><button class="btn" id="print">Print</button>`)}
+    shell("certificates", `${backLink("#/certificates", "All certificates")}${pageHead("Certificate", c.id, `<a class="btn" href="${BASE}/verify#id=${enc(c.id)}&code=${enc(c.code)}">Open public check</a><button class="btn" id="print">Print</button>`)}
       ${c.status === "revoked" ? `<div class="banner bad">Revoked: ${esc(c.revoked_reason)}</div>` : ""}
       <section class="certificate"><p class="muted">SLIIT Northern Uni certifies that</p><p class="holder">${esc(c.student_name)}</p>
         <p class="muted">has been awarded</p><h2>${esc(c.title)}</h2><p>${esc(c.programme)}</p><p class="muted">Issued ${esc(c.issued_on)}</p>
@@ -486,40 +723,64 @@ const pages = {
   },
 
   async profile() {
-    const p = await api("/api/profile");
-    const labels = session.user.role === "faculty"
-      ? [["ID", "id"], ["Name", "name"], ["Title", "title"], ["Department", "department"], ["Email", "email"], ["Phone", "phone"]]
-      : [["ID", "id"], ["Name", "name"], ["Programme", "programme"], ["Intake", "intake"], ["Email", "email"], ["Phone", "phone"], ["NIC", "nic"], ["Date of birth", "dob"], ["Address", "address"]];
-    shell("profile", `${pageHead("My profile", "To correct your details, contact the registry.")}
-      <section class="card"><dl class="kv">${labels.map(([l, k]) => `<dt>${esc(l)}</dt><dd>${dash(p[k])}</dd>`).join("")}</dl></section>`);
+    const role = session.user.role;
+    const security = `<section class="card stack"><div class="row spread"><div><h2>Security</h2><p class="small muted">Change the password you use to sign in.</p></div>
+      <button class="btn" id="pw-profile">Change password</button></div></section>`;
+    if (role === "admin") {
+      shell("profile", `${pageHead("My profile", "Your administrator account.")}
+        <div class="grid-2">
+          <section class="card stack"><h2>Account</h2><dl class="kv"><dt>Username</dt><dd>${esc(session.user.username)}</dd><dt>Role</dt><dd>Administrator</dd><dt>System</dt><dd>${esc(session.system_label || "")}</dd></dl></section>
+          ${security}
+        </div>`);
+    } else {
+      const p = await api("/api/profile");
+      const labels = role === "faculty"
+        ? [["ID", "id"], ["Name", "name"], ["Title", "title"], ["Department", "department"], ["Email", "email"], ["Phone", "phone"]]
+        : [["ID", "id"], ["Name", "name"], ["Programme", "programme"], ["Intake", "intake"], ["Email", "email"], ["Phone", "phone"], ["NIC", "nic"], ["Date of birth", "dob"], ["Address", "address"]];
+      shell("profile", `${pageHead("My profile", "To correct your details, contact the registry.")}
+        <div class="grid-2">
+          <section class="card stack"><h2>My details</h2><dl class="kv">${labels.map(([l, k]) => `<dt>${esc(l)}</dt><dd>${dash(p[k])}</dd>`).join("")}</dl></section>
+          ${security}
+        </div>`);
+    }
+    root.querySelector("#pw-profile").onclick = changePassword;
   },
 
   async chain() {
     const [status, list] = await Promise.all([api("/api/chain/status"), api(`/api/chain/blocks?limit=${CHAIN_PAGE}&offset=${chainOffset}`)]);
-    shell("chain", `${pageHead("Blockchain", `${status.height} blocks. Payloads are stored only as ciphertext.`, `${status.healthy ? "" : `<button class="btn primary" id="repair">Repair from majority</button>`}${list.dev ? `<button class="btn danger" id="tamper">Simulate tampering</button>` : ""}`)}
+    const bloom = list.system === "bloom";
+    const anchorName = bloom ? "Bloom filter" : "Field hashes";
+    const anchorIntro = bloom
+      ? "Each block stores a keyed Bloom filter. Its bits reveal nothing about the record without the secret key. The full record is kept off-chain."
+      : "Each block stores an unsalted SHA-256 hash of the record and of each field. The full record is kept off-chain.";
+    shell("chain", `${pageHead("Blockchain", `${status.height} blocks · ${list.system === "bloom" ? "Bloom filter anchors" : "SHA-256 hash anchors"}.`, `${status.healthy ? "" : `<button class="btn primary" id="repair">Repair from majority</button>`}${list.dev ? `<button class="btn danger" id="tamper">Simulate tampering</button>` : ""}`)}
       ${status.healthy ? "" : `<div class="banner bad">${status.has_majority ? "A node is out of consensus. Records are still served from the majority chain." : "No majority of nodes agrees on a valid chain. New writes are blocked."}</div>`}
+      ${status.rejected ? `<div class="banner bad">${status.rejected} off-chain record${status.rejected === 1 ? "" : "s"} did not match ${status.rejected === 1 ? "its" : "their"} on-chain anchor and ${status.rejected === 1 ? "was" : "were"} left out.</div>` : ""}
       <section class="card">${table([
         { label: "Node", key: "node" }, { label: "Blocks", key: "height", num: true },
         { label: "Head hash", html: (n) => `<span class="hash">${esc((n.head || "").slice(0, 20))}…</span>` },
         { label: "Integrity", html: (n) => (n.valid ? `<span class="badge ok">Valid</span>` : `<span class="badge bad">Broken at block ${esc(n.bad_block)}</span>`) },
         { label: "Consensus", html: (n) => (n.in_consensus ? `<span class="badge ok">In consensus</span>` : `<span class="badge bad">Out of consensus</span>`) }], status.nodes)}</section>
-      <section class="card stack"><div><h2>Latest blocks</h2><p class="small muted">What is physically stored in the database: no names, marks or transaction types are readable.</p></div>
+      <section class="card stack"><div><h2>Latest blocks</h2><p class="small muted">${esc(anchorIntro)}</p></div>
       ${table([
         { label: "#", key: "idx", num: true }, { label: "Time", html: (b) => `<span class="nowrap small">${esc(when(b.ts))}</span>` },
         { label: "Hash", html: (b) => `<span class="hash">${esc(b.hash.slice(0, 16))}…</span>` },
         { label: "Previous", html: (b) => `<span class="hash">${esc(b.prev_hash.slice(0, 16))}…</span>` },
-        { label: "Encrypted payload", html: (b) => `<span class="hash">${esc(b.ciphertext.slice(0, 24))}…</span>` },
-        { label: "", html: (b) => `<button class="btn small" data-decrypt="${esc(b.idx)}">Decrypt</button>` }], list.blocks)}
+        { label: anchorName, html: (b) => `<span class="hash">${esc(b.anchor.slice(0, 26))}…</span>` },
+        { label: "", html: (b) => `<button class="btn small" data-view="${esc(b.idx)}">View</button>` }], list.blocks)}
       <div class="row pager"><span class="small muted">Showing ${chainOffset + 1}–${Math.min(chainOffset + CHAIN_PAGE, status.height)} of ${status.height}</span>
         <button class="btn small" id="newer" ${chainOffset === 0 ? "disabled" : ""}>Newer</button>
         <button class="btn small" id="older" ${chainOffset + CHAIN_PAGE >= status.height ? "disabled" : ""}>Older</button></div></section>`);
     root.querySelector("#newer").onclick = () => { chainOffset = Math.max(chainOffset - CHAIN_PAGE, 0); route(); };
     root.querySelector("#older").onclick = () => { chainOffset += CHAIN_PAGE; route(); };
-    root.querySelectorAll("[data-decrypt]").forEach((b) => {
+    root.querySelectorAll("[data-view]").forEach((b) => {
       b.onclick = async () => {
         try {
-          const tx = await api(`/api/chain/blocks/${enc(b.dataset.decrypt)}/decrypted`);
-          infoDialog(`Block ${b.dataset.decrypt} decrypted`, "Decrypted with the ledger key for this view only. The database still holds ciphertext.", `<pre class="json">${esc(JSON.stringify(tx, null, 2))}</pre>`);
+          const d = await api(`/api/chain/blocks/${enc(b.dataset.view)}`);
+          const verified = d.verified ? `<span class="badge ok">Record matches anchor</span>` : `<span class="badge bad">Record does not match anchor</span>`;
+          infoDialog(`Block ${b.dataset.view}`, "The anchor is stored on every node. The record is held off-chain and checked against the anchor.", `<div class="stack"><div class="row">${verified}</div>
+            <div><h3>On-chain anchor</h3><pre class="json">${esc(JSON.stringify(d.anchor, null, 2))}</pre></div>
+            <div><h3>Off-chain record</h3><pre class="json">${esc(JSON.stringify(d.record, null, 2))}</pre></div></div>`);
         } catch (err) { toast(err.message, "error"); }
       };
     });
@@ -541,7 +802,7 @@ const pages = {
 function studentForm(s) {
   formDialog({
     title: s ? `Edit ${s.name}` : "Add student", submit: s ? "Save to blockchain" : "Add student", wide: true,
-    intro: "These details are encrypted before being written to the chain.",
+    intro: "These details are stored off-chain and anchored on the chain so any change is detected.",
     fields: [
       { name: "name", label: "Full name", required: true, value: s?.name },
       { name: "email", label: "Email", type: "email", required: true, value: s?.email },
@@ -644,11 +905,12 @@ async function route() {
 }
 
 async function renderRoute() {
-  if (location.pathname === "/verify") { renderVerify(); return; }
+  if (BASE === "") { renderLanding(); return; }
+  if (location.pathname.endsWith("/verify")) { renderVerify(); return; }
   if (!session.user) { renderLogin(); return; }
   root.querySelector("#main")?.classList.add("is-loading");
   const [name = "overview", arg] = location.hash.replace(/^#\/?/, "").split("/");
-  const allowedExtra = { admin: ["student", "course", "certificate"], faculty: ["course"], student: ["certificate"] }[session.user.role];
+  const allowedExtra = { admin: ["student", "course", "certificate", "profile"], faculty: ["course"], student: ["certificate"] }[session.user.role];
   const allowed = NAV[session.user.role].some(([k]) => k === name) || allowedExtra.includes(name);
   const page = allowed && pages[name] ? name : "overview";
   try {
@@ -661,6 +923,11 @@ async function renderRoute() {
 }
 
 window.addEventListener("hashchange", route);
-api("/api/session").then((s) => { session = s; route(); }).catch((err) => {
-  root.innerHTML = `<main class="auth"><div class="banner bad">Could not reach the server: ${esc(err.message)}</div></main>`;
-});
+if (BASE === "") {
+  // Landing page / security check: no registry session to load.
+  renderLanding();
+} else {
+  api("/api/session").then((s) => { session = s; route(); }).catch((err) => {
+    root.innerHTML = `<main class="auth"><div class="banner bad">Could not reach the server: ${esc(err.message)}</div></main>`;
+  });
+}
