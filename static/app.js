@@ -318,6 +318,7 @@ const SECURITY = {
     target: "bloom", targetLabel: "Bloom filter system",
     attacks: [
       { id: "collusion", name: "Collusion among organisations", desc: "Node organisations pool their key shares to reconstruct the Bloom key.", live: true },
+      { id: "pattern_mining", name: "Attack pattern mining", desc: "Link records by Bloom-filter similarity, without the key.", live: true },
       { id: "dictionary", name: "Dictionary attack", desc: "Hash candidate values and match them to the chain." },
       { id: "fieldmatch", name: "Per-field match leak", desc: "Read which field differs from a verify response." },
       { id: "frequency", name: "Frequency analysis", desc: "Count repeated hashes to rank likely values." },
@@ -417,6 +418,30 @@ function renderSecurity() {
         out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Collusion attack · ${esc(c.targetLabel)}</h3><span class="badge bad">${data.blocks_exposed} of ${data.total_blocks} blocks exposed</span></div>
           <p class="small muted">${esc(data.scenario)} The key is reconstructed once ${data.threshold} of ${data.nodes} organisations collude.</p>
           <div class="table-wrap"><table><thead><tr><th>Colluding organisations</th><th>Bloom key</th><th class="num">Blocks exposed</th></tr></thead><tbody>${matrix}</tbody></table></div></div>
+          <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
+        out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (err) {
+        out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;
+      } finally { button.disabled = false; button.textContent = original; }
+      return;
+    }
+
+    // Attack pattern mining: live component, Bloom filter system only.
+    if (securityTab === "inference" && attacks.includes("pattern_mining")) {
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "Running…";
+      try {
+        const data = await api("/api/security/pattern_mining", "POST", {});
+        const groups = data.rows.length
+          ? data.rows.map((g) => `<tr>
+              <td>Group ${g.group}</td>
+              <td class="num">${g.size}</td>
+              <td><span class="mono">${g.blocks.join(", ")}${g.more ? ` +${g.more}` : ""}</span></td></tr>`).join("")
+          : `<tr><td colspan="3"><span class="small muted">No linkable groups found.</span></td></tr>`;
+        out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Attack pattern mining · ${esc(c.targetLabel)}</h3><span class="badge bad">${data.linkable_blocks} of ${data.total_blocks} blocks linkable</span></div>
+          <p class="small muted">${esc(data.scenario)} ${data.clusters} linkable group(s) found from filter similarity alone — no key used.</p>
+          <div class="table-wrap"><table><thead><tr><th>Linked group</th><th class="num">Records</th><th>Block numbers</th></tr></thead><tbody>${groups}</tbody></table></div></div>
           <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
         out.scrollIntoView({ behavior: "smooth", block: "nearest" });
       } catch (err) {

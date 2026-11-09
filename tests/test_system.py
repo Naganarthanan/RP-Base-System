@@ -238,6 +238,15 @@ def test_collusion_attack_runs_on_the_bloom_system(site):
     assert matrix[1] == 0 and matrix[2] == data["blocks_exposed"] and data["blocks_exposed"] > 0
 
 
+def test_pattern_mining_attack_links_records_on_the_bloom_system(site):
+    data = site.test_client().post("/api/security/pattern_mining").get_json()
+    assert data["system"] == "bloom"
+    # Records that share low-entropy fields (e.g. the six students) must link into a group.
+    assert data["largest_cluster"] >= 6
+    assert 0 < data["linkable_blocks"] <= data["total_blocks"]
+    assert data["clusters"] == len(data["rows"]) or len(data["rows"]) == 6
+
+
 # ---- concurrency and headers ----------------------------------------------
 def test_session_survives_concurrent_chain_reads(app):
     failures = []
