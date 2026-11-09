@@ -5,10 +5,12 @@ RUNNERS below. The key is the check-kind the frontend posts to /api/security/<ki
 """
 from .baseline import run_inference
 from .collusion import run_inference_collusion
+from .pattern_mining import run_inference_pattern_mining
 
 RUNNERS = {
     "inference": run_inference,
     "collusion": run_inference_collusion,
+    "pattern_mining": run_inference_pattern_mining,
 }
 
-__all__ = ["run_inference", "run_inference_collusion", "RUNNERS"]
+__all__ = ["run_inference", "run_inference_collusion", "run_inference_pattern_mining", "RUNNERS"]
