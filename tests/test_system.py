@@ -216,10 +216,26 @@ def test_inference_check_separates_the_two_systems(site):
     assert rows["bloom"]["confirmed"] == 0 and rows["bloom"]["verdict"] == "resists"
 
 
-def test_security_check_is_throttled(site):
-    client = site.test_client()
+def test_security_check_is_throttled_in_production(tmp_path):
+    # Development runs the checks unthrottled; production keeps a per-minute limit.
+    prod = create_site(data_dir=tmp_path, env="production")
+    client = prod.test_client()
     codes = [client.post("/api/security/inference").status_code for _ in range(8)]
     assert 429 in codes
+
+
+def test_security_check_is_unthrottled_in_development(site):
+    client = site.test_client()
+    codes = [client.post("/api/security/inference").status_code for _ in range(10)]
+    assert 429 not in codes
+
+
+def test_collusion_attack_runs_on_the_bloom_system(site):
+    data = site.test_client().post("/api/security/collusion").get_json()
+    assert data["system"] == "bloom"
+    assert data["threshold"] == 2 and data["nodes"] == 3
+    matrix = {m["colluding"]: m["blocks_exposed"] for m in data["matrix"]}
+    assert matrix[1] == 0 and matrix[2] == data["blocks_exposed"] and data["blocks_exposed"] > 0
 
 
 # ---- concurrency and headers ----------------------------------------------

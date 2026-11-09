@@ -317,6 +317,7 @@ const SECURITY = {
     question: "Can someone holding the chain confirm a guessed value without the key?",
     target: "bloom", targetLabel: "Bloom filter system",
     attacks: [
+      { id: "collusion", name: "Collusion among organisations", desc: "Node organisations pool their key shares to reconstruct the Bloom key.", live: true },
       { id: "dictionary", name: "Dictionary attack", desc: "Hash candidate values and match them to the chain." },
       { id: "fieldmatch", name: "Per-field match leak", desc: "Read which field differs from a verify response." },
       { id: "frequency", name: "Frequency analysis", desc: "Count repeated hashes to rank likely values." },
@@ -399,6 +400,28 @@ function renderSecurity() {
       out.innerHTML = selection + `<div class="card stack"><div class="row"><span class="badge warn">Not connected yet</span></div>
         <p>These strategies are placeholder components. Connect each one to its backend and return its result here. The baseline (no defence) run already works below.</p></div>`;
       out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+
+    // Collusion inference attack: live component, Bloom filter system only.
+    if (securityTab === "inference" && attacks.includes("collusion")) {
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "Running…";
+      try {
+        const data = await api("/api/security/collusion", "POST", {});
+        const matrix = data.matrix.map((m) => `<tr>
+            <td>${m.colluding} of ${data.nodes}</td>
+            <td>${m.key_reconstructed ? `<span class="badge bad">Reconstructed</span>` : `<span class="badge ok">Safe</span>`}</td>
+            <td class="num">${m.blocks_exposed} / ${data.total_blocks}</td></tr>`).join("");
+        out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Collusion attack · ${esc(c.targetLabel)}</h3><span class="badge bad">${data.blocks_exposed} of ${data.total_blocks} blocks exposed</span></div>
+          <p class="small muted">${esc(data.scenario)} The key is reconstructed once ${data.threshold} of ${data.nodes} organisations collude.</p>
+          <div class="table-wrap"><table><thead><tr><th>Colluding organisations</th><th>Bloom key</th><th class="num">Blocks exposed</th></tr></thead><tbody>${matrix}</tbody></table></div></div>
+          <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
+        out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (err) {
+        out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;
+      } finally { button.disabled = false; button.textContent = original; }
       return;
     }
 

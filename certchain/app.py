@@ -635,12 +635,14 @@ def create_app(data_dir=None, env=None, seed_demo=True, public_url=None, system=
 
 def create_site(data_dir=None, env=None, public_url=None) -> Flask:
     """The landing page and security check, with each system mounted under its own path."""
+    env = env or os.environ.get("APP_ENV", "development")
     data = Path(data_dir or os.environ.get("CERTCHAIN_DATA", BASE / "data"))
     systems = {name: create_app(data / name, env=env, public_url=public_url, system=name, prefix=f"/{name}")
                for name in SYSTEMS}
     site = Flask(__name__, static_folder=str(BASE / "static"), static_url_path="/static")
     site.config.update(MAX_CONTENT_LENGTH=64 * 1024, SYSTEMS=systems)
-    security_throttle = Throttle(6, 60)
+    # Development: run the security checks as often as you like. Production keeps a limit.
+    security_throttle = Throttle(100000, 60) if env == "development" else Throttle(6, 60)
     add_security_headers(site)
 
     @site.get("/")
@@ -656,15 +658,14 @@ def create_site(data_dir=None, env=None, public_url=None) -> Flask:
 
     @site.post("/api/security/<kind>")
     def security_check(kind):
-        from .attacks import run_inference, run_manipulation
-        runners = {"manipulation": run_manipulation, "inference": run_inference}
-        if kind not in runners:
+        from .attacks import RUNNERS
+        if kind not in RUNNERS:
             return jsonify(error="unknown check"), 404
         ip = request.remote_addr or "unknown"
         if security_throttle.blocked(ip):
             return jsonify(error="too many checks, try again in a minute"), 429
         security_throttle.hit(ip)
-        return jsonify(runners[kind]())
+        return jsonify(RUNNERS[kind]())
 
     @site.errorhandler(404)
     def on_404(_):
