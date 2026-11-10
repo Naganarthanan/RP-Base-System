@@ -300,6 +300,7 @@ const SECURITY = {
     question: "Can a forged record be made to pass on-chain verification?",
     target: "conventional", targetLabel: "Conventional system",
     attacks: [
+      { id: "collusion", name: "Collusion among organisations", desc: "Node organisations pool keys and consensus to pass a tampered record.", live: true },
       { id: "asset", name: "Asset substitution", desc: "Swap the logo, seal or signature on a certificate." },
       { id: "field", name: "Field rewrite", desc: "Edit a record field and recompute its hash." },
       { id: "node", name: "Node copy rewrite", desc: "A compromised organisation rewrites its own chain copy." },
@@ -401,6 +402,30 @@ function renderSecurity() {
       out.innerHTML = selection + `<div class="card stack"><div class="row"><span class="badge warn">Not connected yet</span></div>
         <p>These strategies are placeholder components. Connect each one to its backend and return its result here. The baseline (no defence) run already works below.</p></div>`;
       out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+
+    // Collusion manipulation attack: live component, conventional & Bloom systems.
+    if (securityTab === "manipulation" && attacks.includes("collusion")) {
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "Running…";
+      try {
+        const data = await api("/api/security/manipulation_collusion", "POST", {});
+        const matrix = data.matrix.map((m) => `<tr>
+            <td>${m.colluding} of ${data.nodes}</td>
+            <td>${m.key_reconstructed ? `<span class="badge bad">Reconstructed</span>` : `<span class="badge ok">Safe</span>`}</td>
+            <td>${m.consensus_hijacked ? `<span class="badge bad">Majority</span>` : `<span class="badge ok">Outvoted</span>`}</td>
+            <td>${m.verification_passed ? `<span class="badge bad">Bypassed</span>` : `<span class="badge ok">Blocked</span>`}</td>
+            <td class="num">${m.status === "Success" ? `<span class="badge bad">Success (100%)</span>` : `<span class="badge ok">Failure (0%)</span>`}</td></tr>`).join("");
+        out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Collusion attack · ${esc(c.targetLabel)}</h3><span class="badge bad">ASR: 100% at threshold (≥ ${data.threshold} nodes)</span></div>
+          <p class="small muted">${esc(data.scenario)} Consensus is hijacked and verification bypassed once ${data.threshold} of ${data.nodes} organisations collude.</p>
+          <div class="table-wrap"><table><thead><tr><th>Colluding organisations</th><th>Bloom key</th><th>Consensus</th><th>Verification pipeline</th><th class="num">Result (ASR)</th></tr></thead><tbody>${matrix}</tbody></table></div></div>
+          <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
+        out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (err) {
+        out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;
+      } finally { button.disabled = false; button.textContent = original; }
       return;
     }
 
