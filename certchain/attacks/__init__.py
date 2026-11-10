@@ -13,7 +13,8 @@ from . import inference, manipulation
 RUNNERS = {**manipulation.RUNNERS, **inference.RUNNERS}
 
 run_manipulation = manipulation.run_manipulation
+run_manipulation_collusion = manipulation.run_manipulation_collusion
 run_inference = inference.run_inference
 run_inference_collusion = inference.run_inference_collusion
 
-__all__ = ["RUNNERS", "run_manipulation", "run_inference", "run_inference_collusion"]
+__all__ = ["RUNNERS", "run_manipulation", "run_manipulation_collusion", "run_inference", "run_inference_collusion"]

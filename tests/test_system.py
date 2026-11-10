@@ -238,6 +238,16 @@ def test_collusion_attack_runs_on_the_bloom_system(site):
     assert matrix[1] == 0 and matrix[2] == data["blocks_exposed"] and data["blocks_exposed"] > 0
 
 
+def test_manipulation_collusion_attack(site):
+    data = site.test_client().post("/api/security/manipulation_collusion").get_json()
+    assert data["check"] == "manipulation" and data["attack"] == "collusion"
+    assert data["threshold"] == 2 and data["nodes"] == 3
+    matrix = {m["colluding"]: m for m in data["matrix"]}
+    assert matrix[1]["status"] == "Failure" and matrix[1]["asr"] == 0.0
+    assert matrix[2]["status"] == "Success" and matrix[2]["asr"] == 1.0
+    assert matrix[3]["status"] == "Success" and matrix[3]["asr"] == 1.0
+
+
 def test_pattern_mining_attack_links_records_on_the_bloom_system(site):
     data = site.test_client().post("/api/security/pattern_mining").get_json()
     assert data["system"] == "bloom"
