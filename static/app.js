@@ -307,7 +307,8 @@ const SECURITY = {
       { id: "qr", name: "QR / metadata swap", desc: "Repoint the QR code or alter the file metadata." },
     ],
     defenses: [
-      { id: "vertical", name: "Vertical partitioning", desc: "Split anchors across linked blocks (inter-block)." },
+      { id: "vertical", name: "Vertical partitioning", desc: "Split anchors across linked blocks (inter-block).", live: true },
+      // { id: "vertical", name: "Vertical partitioning", desc: "Split anchors across linked blocks (inter-block)." },
       { id: "forensic", name: "OCR / forensic asset check", desc: "Verify the logo, seal and signature images." },
       { id: "consensus", name: "Consensus threshold", desc: "Require more nodes to agree before accepting." },
       { id: "keyed", name: "Keyed anchor (HMAC)", desc: "Sign each anchor with a secret key." },
@@ -340,6 +341,58 @@ function picklist(kind, items) {
   return items.map((s) => `<label class="pick">
       <input type="checkbox" data-kind="${kind}" value="${esc(s.id)}">
       <span class="pick-body"><strong>${esc(s.name)}</strong><span class="small muted">${esc(s.desc)}</span></span></label>`).join("");
+}
+
+const pct = (x) => `${(x * 100).toFixed(1).replace(/\.0$/, "")}%`;
+const asrBadge = (x) => `<span class="badge ${x >= 0.5 ? "bad" : x > 0 ? "warn" : "ok"}">${pct(x)}</span>`;
+
+// Report for one defence run (vertical partitioning has a dedicated layout).
+function defenseReport(r, c) {
+  if (r.defense !== "vertical") {
+    return `<div class="card stack"><h3>${esc(r.defense_name || r.defense)}</h3><p>${esc(r.conclusion || "")}</p>
+      <pre class="mono small">${esc(JSON.stringify(r, null, 2))}</pre></div>`;
+  }
+  const cfg = r.config, m = r.metrics, h = r.headline;
+  const verdict = (v) => v.forged_accepted
+    ? `<span class="badge bad">Forgery accepted</span>`
+    : `<span class="badge ok">${esc(v.status)}</span>`;
+  const where = (v) => v.first_finding
+    ? `<span class="small">Block ${v.first_finding.block} · ${esc(v.first_finding.nodes.join(" ↔ "))}</span>`
+    : `<span class="small muted">no inconsistency to find</span>`;
+  const scenarios = r.scenarios.map((s) => `<tr>
+      <td><strong>${esc(s.label)}</strong><br><span class="small muted">block ${s.target_block} · ${esc(s.record_type)}<br>colluders: ${esc(s.colluders.join(", "))}</span></td>
+      <td>${s.full_replication.forged_accepted ? `<span class="badge bad">Forgery accepted</span>` : `<span class="badge ok">Rejected</span>`}</td>
+      <td>${verdict(s.variants.as_proposed)}<br>${where(s.variants.as_proposed)}</td>
+      <td>${verdict(s.variants.head_pin)}<br>${where(s.variants.head_pin)}</td></tr>`).join("");
+  const matrix = r.matrix.map((x) => `<tr>
+      <td>${x.colluding} of ${cfg.nodes}</td><td class="num">${asrBadge(x.baseline_asr)}</td><td class="num">${asrBadge(x.asr)}</td>
+      <td class="num">${asrBadge(x.asr_head_pin)}</td><td class="num">${pct(x.model)}</td>
+      <td class="num">${x.worst_coalition_blocks} of ${cfg.chain_blocks}</td></tr>`).join("");
+  const strategies = r.strategies.map((x) => `<tr>
+      <td>${esc(x.label)}${x.selected ? ` <span class="badge">selected</span>` : ""}</td><td class="num">${x.storage_percent}%</td>
+      <td class="num">${asrBadge(x.asr)}</td><td class="num">${asrBadge(x.asr_head_pin)}</td>
+      <td class="num">${x.false_positive ? `<span class="badge bad">yes</span>` : "none"}</td></tr>`).join("");
+  const sweep = r.node_sweep.map((x) => `<tr><td>${x.nodes}</td><td class="num">${pct(x.asr_c2)}</td><td class="num">${pct(x.model_c2)}</td>
+      <td class="num">${pct(x.asr_majority)}</td></tr>`).join("");
+  return `<div class="card stack"><div class="row spread"><h3>${esc(r.defense_name)} vs collusion · ${esc(c.targetLabel)}</h3>
+      <span class="badge ${h.asr > 0 ? "warn" : "ok"}">ASR at ${h.colluding} colluders: ${pct(h.baseline_asr)} → ${pct(h.asr)}</span></div>
+      <p class="small muted">${esc(cfg.strategy_label)} over ${cfg.nodes} nodes · ${cfg.chain_blocks} blocks from the ${esc(cfg.chain_source)}.
+      The live database is not modified. ${r.red_team_reference ? `Red-team reference on the full chain: ${esc(r.red_team_reference.status)} (ASR ${r.red_team_reference.asr}).` : ""}</p>
+      <div class="row"><span class="badge ${m.detection_rate >= 0.9 ? "ok" : "warn"}" title="Share of attacks by coalitions smaller than all nodes that were detected or blocked">Detection ${pct(m.detection_rate)}</span>
+        <span class="badge ${m.false_positive_rate === 0 ? "ok" : "bad"}">False positives ${pct(m.false_positive_rate)}</span>
+        <span class="badge">Storage ${m.storage_percent_of_full}% of full copy</span>
+        <span class="badge ${m.latency_ms < m.latency_target_ms ? "ok" : "bad"}">Verify ${m.latency_ms} ms</span></div></div>
+    <div class="card stack"><h3>Worked scenarios (coalition forges one record)</h3>
+      <div class="table-wrap"><table><thead><tr><th>Target</th><th>Full replication</th><th>Vertical, as proposed</th><th>Vertical + head pin</th></tr></thead><tbody>${scenarios}</tbody></table></div></div>
+    <div class="card stack"><h3>Attack success rate by coalition size</h3>
+      <div class="table-wrap"><table><thead><tr><th>Colluding</th><th class="num">Full replication</th><th class="num">Vertical</th><th class="num">+ head pin</th><th class="num">Model (c/n)^${cfg.model_k}</th><th class="num">Forgeable blocks (worst coalition)</th></tr></thead><tbody>${matrix}</tbody></table></div></div>
+    <div class="card stack"><h3>Partitioning strategies at ${cfg.nodes} nodes (${cfg.threshold} colluding)</h3>
+      <div class="table-wrap"><table><thead><tr><th>Strategy</th><th class="num">Storage per node</th><th class="num">ASR</th><th class="num">ASR + head pin</th><th class="num">False positives</th></tr></thead><tbody>${strategies}</tbody></table></div></div>
+    <div class="card stack"><h3>More nodes, lower success (selected strategy)</h3>
+      <div class="table-wrap"><table><thead><tr><th>Nodes</th><th class="num">ASR, 2 colluding</th><th class="num">Model, 2 colluding</th><th class="num">ASR, majority colluding</th></tr></thead><tbody>${sweep}</tbody></table></div></div>
+    <div class="card stack"><strong>Findings for the next iteration</strong><ul>${r.findings.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
+      <p><strong>Conclusion.</strong> ${esc(r.conclusion)}</p>
+      <p class="small muted">Model check: the analytic success rate matched ${m.physical_cases} real rewrite-and-verify runs${m.model_agreement ? "" : " — NOT in every case, review the model"}.</p></div>`;
 }
 
 function renderSecurity() {
@@ -397,10 +450,42 @@ function renderSecurity() {
       <div class="sel-row"><span class="small muted">Attack</span><div class="row">${chips("attack", attacks)}</div></div>
       <div class="sel-row"><span class="small muted">Defence</span><div class="row">${chips("defense", defenses)}</div></div></div>`;
 
-    if (defenses.length) {
-      // Defences are not wired to a backend yet: show the selection as a scaffold.
-      out.innerHTML = selection + `<div class="card stack"><div class="row"><span class="badge warn">Not connected yet</span></div>
-        <p>These strategies are placeholder components. Connect each one to its backend and return its result here. The baseline (no defence) run already works below.</p></div>`;
+    // if (defenses.length) {
+    //   // Defences are not wired to a backend yet: show the selection as a scaffold.
+    //   out.innerHTML = selection + `<div class="card stack"><div class="row"><span class="badge warn">Not connected yet</span></div>
+    //     <p>These strategies are placeholder components. Connect each one to its backend and return its result here. The baseline (no defence) run already works below.</p></div>`;
+    //   out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    //   return;
+    // }
+        if (defenses.length) {
+      // Live defences run on the backend against one live attack; the rest are still placeholders.
+      const isLive = (list, id) => (list.find((x) => x.id === id) || {}).live;
+      const liveDefs = defenses.filter((id) => isLive(c.defenses, id));
+      const pending = defenses.filter((id) => !liveDefs.includes(id));
+      const liveAttacks = attacks.filter((id) => isLive(c.attacks, id));
+      let html = selection;
+      if (liveDefs.length && !liveAttacks.length) {
+        html += `<div class="card stack"><div class="row"><span class="badge warn">Pick an attack</span></div>
+          <p>Choose a live attack to run the selected defence against.</p></div>`;
+      }
+      if (pending.length) {
+        html += `<div class="card stack"><div class="row"><span class="badge warn">Not connected yet</span> ${chips("defense", pending)}</div>
+          <p class="small muted">These defences are still placeholders.</p></div>`;
+      }
+      out.innerHTML = html;
+      if (liveDefs.length && liveAttacks.length) {
+        button.disabled = true;
+        const original = button.textContent;
+        button.textContent = "Running…";
+        try {
+          for (const attack of liveAttacks) {
+            const data = await api("/api/security/defend", "POST", { check: securityTab, attack, defenses: liveDefs });
+            data.results.forEach((r) => { out.insertAdjacentHTML("beforeend", defenseReport(r, c)); });
+          }
+        } catch (err) {
+          out.insertAdjacentHTML("beforeend", `<div class="card form-error">${esc(err.message)}</div>`);
+        } finally { button.disabled = false; button.textContent = original; }
+      }
       out.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }

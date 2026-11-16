@@ -667,6 +667,30 @@ def create_site(data_dir=None, env=None, public_url=None) -> Flask:
         security_throttle.hit(ip)
         return jsonify(RUNNERS[kind]())
 
+    @site.post("/api/security/defend")
+    def security_defend():
+        """Run selected defences against one attack: {check, attack, defenses: [...], options: {id: {...}}}."""
+        from .defenses import RUNNERS as DEFENSES
+        body = request.get_json(silent=True) or {}
+        attack, ids, options = body.get("attack"), body.get("defenses"), body.get("options") or {}
+        if not isinstance(attack, str) or not isinstance(ids, list) or not isinstance(options, dict):
+            return jsonify(error="send an attack id and a list of defence ids"), 400
+        ip = request.remote_addr or "unknown"
+        if security_throttle.blocked(ip):
+            return jsonify(error="too many checks, try again in a minute"), 429
+        security_throttle.hit(ip)
+        results, unavailable = [], []
+        for defence_id in dict.fromkeys(i for i in ids if isinstance(i, str)):
+            runner = DEFENSES.get(defence_id)
+            if runner is None:
+                unavailable.append(defence_id)
+                continue
+            try:
+                results.append(runner(attack, options.get(defence_id)))
+            except ValueError as err:
+                return jsonify(error=str(err)), 400
+        return jsonify(attack=attack, results=results, unavailable=unavailable)
+    
     @site.errorhandler(404)
     def on_404(_):
         return jsonify(error="not found"), 404
