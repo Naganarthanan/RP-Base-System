@@ -307,8 +307,9 @@ const SECURITY = {
       { id: "qr", name: "QR / metadata swap", desc: "Repoint the QR code or alter the file metadata." },
     ],
     defenses: [
-      { id: "vertical", name: "Vertical partitioning", desc: "Split anchors across linked blocks (inter-block).", live: true },
-      // { id: "vertical", name: "Vertical partitioning", desc: "Split anchors across linked blocks (inter-block)." },
+      { id: "single_sequence", name: "Single-sequence partitioning", desc: "Block i goes to node ((i-1) mod n)+1, cycling in order.", live: true },
+      { id: "single_odd", name: "Single-odd partitioning", desc: "Blocks follow an odd-numbered node order." },
+      { id: "k_sequence", name: "k-sequence partitioning", desc: "Each block is replicated on k nodes in sequence." },
       { id: "forensic", name: "OCR / forensic asset check", desc: "Verify the logo, seal and signature images." },
       { id: "consensus", name: "Consensus threshold", desc: "Require more nodes to agree before accepting." },
       { id: "keyed", name: "Keyed anchor (HMAC)", desc: "Sign each anchor with a secret key." },
@@ -348,7 +349,7 @@ const asrBadge = (x) => `<span class="badge ${x >= 0.5 ? "bad" : x > 0 ? "warn" 
 
 // Report for one defence run (vertical partitioning has a dedicated layout).
 function defenseReport(r, c) {
-  if (r.defense !== "vertical") {
+    if (r.layout !== "partitioning") {
     return `<div class="card stack"><h3>${esc(r.defense_name || r.defense)}</h3><p>${esc(r.conclusion || "")}</p>
       <pre class="mono small">${esc(JSON.stringify(r, null, 2))}</pre></div>`;
   }
@@ -430,7 +431,7 @@ function renderSecurity() {
   const updateSummary = () => {
     const d = picked("defense").map((i) => i.value);
     summary.textContent = d.length
-      ? `${d.length} defence${d.length === 1 ? "" : "s"} selected — scaffold run.`
+      ? `${d.length} defence${d.length === 1 ? "" : "s"} selected — defended run.`
       : "No defence selected — baseline run.";
   };
   root.querySelectorAll('input[type="checkbox"]').forEach((i) => { i.onchange = updateSummary; });
