@@ -85,7 +85,8 @@ def _scenario(label, plain, pinned, ledger, target, coalition, n, blocks) -> dic
     return out
 
 
-def run_vertical(attack: str = "collusion", options: dict | None = None) -> dict:
+def run_vertical(attack: str = "collusion", options: dict | None = None,
+                 defense: str = "vertical", name: str = NAME) -> dict:
     if attack != "collusion":
         raise ValueError(f"vertical partitioning has not been evaluated against the {attack!r} attack yet")
     opts = _options(options)
@@ -193,7 +194,8 @@ def run_vertical(attack: str = "collusion", options: dict | None = None) -> dict
                     "every later block, so the exact success rate is far lower than the model except at the tail.")
 
     return {
-        "check": "manipulation", "defense": "vertical", "defense_name": NAME, "attack": "collusion",
+        "check": "manipulation", "layout": "partitioning", "defense": defense, "defense_name": name,
+        "attack": "collusion",
         "config": {"strategy": opts["strategy"], "strategy_label": strategy.label, "nodes": n, "k": opts["k"],
                    "chain_blocks": N, "chain_source": source, "threshold": threshold, "model_k": MODEL_K,
                    "node_names": names},
