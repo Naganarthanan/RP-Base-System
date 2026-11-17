@@ -14,7 +14,19 @@ RUNNERS = {**manipulation.RUNNERS, **inference.RUNNERS}
 
 run_manipulation = manipulation.run_manipulation
 run_manipulation_collusion = manipulation.run_manipulation_collusion
+sequence_rewrite_collusion = manipulation.sequence_rewrite_collusion
+odd_node_hijack = manipulation.odd_node_hijack
+k_group_tampering = manipulation.k_group_tampering
 run_inference = inference.run_inference
 run_inference_collusion = inference.run_inference_collusion
 
-__all__ = ["RUNNERS", "run_manipulation", "run_manipulation_collusion", "run_inference", "run_inference_collusion"]
+__all__ = [
+    "RUNNERS",
+    "run_manipulation",
+    "run_manipulation_collusion",
+    "sequence_rewrite_collusion",
+    "odd_node_hijack",
+    "k_group_tampering",
+    "run_inference",
+    "run_inference_collusion",
+]
