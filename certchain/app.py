@@ -658,14 +658,16 @@ def create_site(data_dir=None, env=None, public_url=None) -> Flask:
 
     @site.post("/api/security/<kind>")
     def security_check(kind):
-        from .attacks import RUNNERS
-        if kind not in RUNNERS:
+        from .attacks import RUNNERS as ATTACK_RUNNERS
+        from .defenses import RUNNERS as DEFENSE_RUNNERS
+        runners = {**ATTACK_RUNNERS, **DEFENSE_RUNNERS}
+        if kind not in runners:
             return jsonify(error="unknown check"), 404
         ip = request.remote_addr or "unknown"
         if security_throttle.blocked(ip):
             return jsonify(error="too many checks, try again in a minute"), 429
         security_throttle.hit(ip)
-        return jsonify(RUNNERS[kind]())
+        return jsonify(runners[kind]())
 
     @site.post("/api/security/defend")
     def security_defend():

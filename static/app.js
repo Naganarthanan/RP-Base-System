@@ -292,8 +292,8 @@ function renderLanding() {
   </main>`;
 }
 
-// The two checks, each with its attack and defence strategies. Strategies are UI
-// scaffolding: each is a separate component to be wired to its own backend later.
+// The two checks, each with its attack and defence strategies. A `live` flag marks
+// strategies connected to a backend; the remaining entries are UI placeholders.
 const SECURITY = {
   manipulation: {
     title: "Manipulation", icon: "chain",
@@ -329,7 +329,7 @@ const SECURITY = {
     defenses: [
       { id: "keyedbloom", name: "Keyed Bloom filter", desc: "Derive bit positions from HMAC under a secret key." },
       { id: "salt", name: "Salted hashing", desc: "Add a per-record salt before hashing each field." },
-      { id: "horizontal", name: "Horizontal partitioning", desc: "Split fields across records (intra-block)." },
+      { id: "sequential", name: "Horizontal Partitioning", desc: "Use Sequential Bit Partitioning to split each Bloom-filter bit array into balanced ranges and assign one range to each node.", live: true, standalone: true },
       { id: "padding", name: "Field padding / k-anonymity", desc: "Pad the filter so field counts do not leak." },
     ],
   },
@@ -348,6 +348,57 @@ const asrBadge = (x) => `<span class="badge ${x >= 0.5 ? "bad" : x > 0 ? "warn" 
 
 // Report for one defence run (vertical partitioning has a dedicated layout).
 function defenseReport(r, c) {
+  if (r.defense === "horizontal_partitioning") {
+    const percentage = (value) => value == null ? "N/A" : `${value}%`;
+    const assignments = r.assignments.map((x) => `<tr>
+      <td>P${x.partition}</td><td class="num">${x.start_bit}-${x.end_bit}</td><td class="num">${x.bit_length}</td>
+      <td>${esc(x.nodes.join(", "))}</td></tr>`).join("");
+    const nodeStorage = r.storage.nodes.map((x) => `<tr><td>${esc(x.node)}</td>
+      <td class="num">${x.partitions}</td><td class="num">${x.payload_bytes}</td></tr>`).join("");
+    const contributions = r.verification.contributions.map((x) => `<tr>
+      <td>${esc(x.nodes.join(", "))}</td><td>P${x.partition}</td>
+      <td class="num">${x.required_positions}</td><td class="num">${x.matched_positions}</td>
+      <td class="num">${percentage(x.local_match_percentage)}</td>
+      <td class="num">${percentage(x.position_share_percentage)}</td>
+      <td class="num">${percentage(x.coverage_percentage)}</td>
+      <td><span class="badge ${x.status === "matched" ? "ok" : "bad"}">${esc(x.status)}</span></td></tr>`).join("");
+    const availability = r.availability.map((x) => `<tr>
+      <td>${x.offline_nodes.length ? esc(x.offline_nodes.join(", ")) : "None"}</td>
+      <td class="num">${percentage(x.match_percentage)}</td>
+      <td class="num">${percentage(x.verification_coverage_percentage)}</td>
+      <td class="num">${percentage(x.available_filter_percentage)}</td>
+      <td class="num">${x.verified_records}</td><td class="num">${x.unavailable_records}</td>
+      <td><span class="badge ${x.status === "available" ? "ok" : "warn"}">${esc(x.status)}</span></td></tr>`).join("");
+    const passed = r.all_verified && r.all_reconstructed;
+    return `<div class="card stack"><div class="row spread"><h3>Horizontal Partitioning - ${esc(c.targetLabel)}</h3>
+        <span class="badge ${passed ? "ok" : "bad"}">${passed ? "Validation passed" : "Validation failed"}</span></div>
+      <p class="small muted">Sequential Bit Partitioning - ${r.partition_count} partitions - ${r.bloom_filter_bits} Bloom-filter bits - single-copy placement.</p>
+      <div class="row"><span class="badge">${r.blocks_partitioned} blocks partitioned</span>
+        <span class="badge ${r.all_reconstructed ? "ok" : "bad"}">Reconstruction ${r.all_reconstructed ? "passed" : "failed"}</span>
+        <span class="badge ${r.all_verified ? "ok" : "bad"}">Verification ${r.all_verified ? "passed" : "failed"}</span>
+        <span class="badge ${r.verification.baseline_agreement ? "ok" : "bad"}">Baseline agreement ${r.verification.baseline_agreement ? "passed" : "failed"}</span>
+        <span class="badge">Position match ${percentage(r.verification.match_percentage)}</span>
+        <span class="badge">Position coverage ${percentage(r.verification.coverage_percentage)}</span>
+        <span class="badge">Maximum node exposure ${r.max_node_exposure_percent}%</span>
+        <span class="badge">Average verify ${r.metrics.average_verification_ms} ms</span>
+        <span class="badge">Communication ${r.metrics.communication_bytes_per_record} bytes/record</span></div></div>
+      <div class="card stack"><h3>Partition assignment</h3>
+        <div class="table-wrap"><table><thead><tr><th>Partition</th><th class="num">Bit range</th><th class="num">Bits</th><th>Assigned node</th></tr></thead>
+        <tbody>${assignments}</tbody></table></div></div>
+      <div class="card stack"><h3>Temporary per-node stores</h3>
+        <div class="table-wrap"><table><thead><tr><th>Node</th><th class="num">Stored partitions</th><th class="num">Payload bytes</th></tr></thead>
+        <tbody>${nodeStorage}</tbody></table></div></div>
+      <div class="card stack"><h3>Partition verification contributions</h3>
+        <p class="small muted">Each node checks only the required keyed positions inside its assigned partition. Local match and verification coverage are reported separately.</p>
+        <div class="table-wrap"><table><thead><tr><th>Node</th><th>Partition</th><th class="num">Required positions</th><th class="num">Matched positions</th><th class="num">Local match</th><th class="num">Position share</th><th class="num">Coverage</th><th>Status</th></tr></thead>
+        <tbody>${contributions}</tbody></table></div></div>
+      <div class="card stack"><h3>Node availability experiment</h3>
+        <p class="small muted">Match measures checked positions. Position coverage measures required checks completed. Bloom coverage measures the physical bit ranges still available.</p>
+        <div class="table-wrap"><table><thead><tr><th>Offline node</th><th class="num">Local match</th><th class="num">Position coverage</th><th class="num">Bloom coverage</th><th class="num">Verified records</th><th class="num">Inconclusive records</th><th>Status</th></tr></thead>
+        <tbody>${availability}</tbody></table></div></div>
+      <div class="card stack"><p><strong>Conclusion.</strong> ${esc(r.conclusion)}</p>
+        <p class="small muted">This read-only experiment distributes partitions into temporary per-node stores. The live ledger is not modified, and the selected attack is not executed against these stores.</p></div>`;
+  }
   if (r.defense !== "vertical") {
     return `<div class="card stack"><h3>${esc(r.defense_name || r.defense)}</h3><p>${esc(r.conclusion || "")}</p>
       <pre class="mono small">${esc(JSON.stringify(r, null, 2))}</pre></div>`;
@@ -429,9 +480,14 @@ function renderSecurity() {
 
   const updateSummary = () => {
     const d = picked("defense").map((i) => i.value);
-    summary.textContent = d.length
-      ? `${d.length} defence${d.length === 1 ? "" : "s"} selected — scaffold run.`
-      : "No defence selected — baseline run.";
+    if (!d.length) {
+      summary.textContent = "No defence selected — baseline run.";
+      return;
+    }
+    const allLive = d.every((id) => (c.defenses.find((x) => x.id === id) || {}).live);
+    summary.textContent = allLive
+      ? `${d.length} live defence${d.length === 1 ? "" : "s"} selected — ready to run.`
+      : `${d.length} defence${d.length === 1 ? "" : "s"} selected — some are not connected.`;
   };
   root.querySelectorAll('input[type="checkbox"]').forEach((i) => { i.onchange = updateSummary; });
 
@@ -450,36 +506,40 @@ function renderSecurity() {
       <div class="sel-row"><span class="small muted">Attack</span><div class="row">${chips("attack", attacks)}</div></div>
       <div class="sel-row"><span class="small muted">Defence</span><div class="row">${chips("defense", defenses)}</div></div></div>`;
 
-    // if (defenses.length) {
-    //   // Defences are not wired to a backend yet: show the selection as a scaffold.
-    //   out.innerHTML = selection + `<div class="card stack"><div class="row"><span class="badge warn">Not connected yet</span></div>
-    //     <p>These strategies are placeholder components. Connect each one to its backend and return its result here. The baseline (no defence) run already works below.</p></div>`;
-    //   out.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    //   return;
-    // }
-        if (defenses.length) {
-      // Live defences run on the backend against one live attack; the rest are still placeholders.
+    if (defenses.length) {
+      // Standalone defences validate their mechanism. Other live defences run against a live attack.
       const isLive = (list, id) => (list.find((x) => x.id === id) || {}).live;
-      const liveDefs = defenses.filter((id) => isLive(c.defenses, id));
-      const pending = defenses.filter((id) => !liveDefs.includes(id));
+      const isStandalone = (id) => (c.defenses.find((x) => x.id === id) || {}).standalone;
+      const standaloneDefs = defenses.filter((id) => isLive(c.defenses, id) && isStandalone(id));
+      const attackDefs = defenses.filter((id) => isLive(c.defenses, id) && !isStandalone(id));
+      const pending = defenses.filter((id) => !isLive(c.defenses, id));
       const liveAttacks = attacks.filter((id) => isLive(c.attacks, id));
       let html = selection;
-      if (liveDefs.length && !liveAttacks.length) {
+      if (attackDefs.length && !liveAttacks.length) {
         html += `<div class="card stack"><div class="row"><span class="badge warn">Pick an attack</span></div>
           <p>Choose a live attack to run the selected defence against.</p></div>`;
+      }
+      if (standaloneDefs.length && attacks.length) {
+        html += `<div class="card stack"><div class="row"><span class="badge warn">Structural validation</span></div>
+          <p class="small muted">Horizontal Partitioning is validated independently in this run. The selected attack is not yet executed against per-node partition storage.</p></div>`;
       }
       if (pending.length) {
         html += `<div class="card stack"><div class="row"><span class="badge warn">Not connected yet</span> ${chips("defense", pending)}</div>
           <p class="small muted">These defences are still placeholders.</p></div>`;
       }
       out.innerHTML = html;
-      if (liveDefs.length && liveAttacks.length) {
+      if (standaloneDefs.length || (attackDefs.length && liveAttacks.length)) {
         button.disabled = true;
         const original = button.textContent;
         button.textContent = "Running…";
         try {
+          for (const defense of standaloneDefs) {
+            const data = await api(`/api/security/${defense}`, "POST", {});
+            out.insertAdjacentHTML("beforeend", defenseReport(data, c));
+          }
           for (const attack of liveAttacks) {
-            const data = await api("/api/security/defend", "POST", { check: securityTab, attack, defenses: liveDefs });
+            if (!attackDefs.length) break;
+            const data = await api("/api/security/defend", "POST", { check: securityTab, attack, defenses: attackDefs });
             data.results.forEach((r) => { out.insertAdjacentHTML("beforeend", defenseReport(r, c)); });
           }
         } catch (err) {
