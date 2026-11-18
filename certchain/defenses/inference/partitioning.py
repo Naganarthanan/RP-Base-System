@@ -33,6 +33,7 @@ def _set_bit(bits: bytearray, position: int) -> None:
 STRATEGY_NAMES = {
     "sequential": "Sequential Bit Partitioning",
     "interleaved": "Interleaved Bit Partitioning",
+    "pairwise": "Sequential Bit Partitioning with Pairwise Replication",
 }
 
 
@@ -43,7 +44,7 @@ def _partition_layout(
     strategy: str,
 ) -> tuple[int, int, int]:
     """Return ``(first global bit, local length, global step)`` for a partition."""
-    if strategy == "sequential":
+    if strategy in {"sequential", "pairwise"}:
         base, remainder = divmod(m, partition_count)
         start = index * base + min(index, remainder)
         length = base + (1 if index < remainder else 0)
@@ -92,6 +93,8 @@ def partition_filter(
         raise PartitionError("node names must be unique")
     if strategy not in STRATEGY_NAMES:
         raise PartitionError(f"unsupported partitioning strategy {strategy!r}")
+    if strategy == "pairwise" and len(nodes) < 2:
+        raise PartitionError("pairwise replication requires at least two nodes")
 
     partitions = []
     for index in range(partition_count):
@@ -99,14 +102,23 @@ def partition_filter(
             bloom.m, partition_count, index, strategy
         )
         packed = _pack_partition(bloom.bits, start, bit_length, step)
+        if strategy == "pairwise":
+            assigned_nodes = [
+                nodes[index % len(nodes)],
+                nodes[(index - 1) % len(nodes)],
+            ]
+            placement, replication_factor = "pairwise_replication", 2
+        else:
+            assigned_nodes = [nodes[index % len(nodes)]]
+            placement, replication_factor = "single_copy", 1
         partitions.append({
             "record_id": record_id,
             "partition_index": index,
             "partition_count": partition_count,
             "strategy": strategy,
-            "placement": "single_copy",
-            "replication_factor": 1,
-            "nodes": [nodes[index % len(nodes)]],
+            "placement": placement,
+            "replication_factor": replication_factor,
+            "nodes": assigned_nodes,
             "start_bit": start,
             "bit_length": bit_length,
             "position_step": step,
@@ -182,6 +194,10 @@ def _validated_partitions(
             raise PartitionError("partition metadata does not describe one Bloom filter")
         if strategy not in STRATEGY_NAMES:
             raise PartitionError("unsupported partitioning strategy")
+        expected_placement = "pairwise_replication" if strategy == "pairwise" else "single_copy"
+        expected_replication = 2 if strategy == "pairwise" else 1
+        if placement != expected_placement or replication_factor != expected_replication:
+            raise PartitionError("partition placement does not match its strategy")
         if not isinstance(replication_factor, int) or replication_factor < 1:
             raise PartitionError("replication_factor must be a positive integer")
         if (
@@ -572,7 +588,17 @@ def _run_partitioning(
 
     storage = store.storage_profile()
     bytes_per_record = round(storage["total_payload_bytes"] / len(records)) if records else 0
-    largest_partition = (anchor_impl.M + partition_count - 1) // partition_count
+    placement = "pairwise_replication" if strategy == "pairwise" else "single_copy"
+    replication_factor = 2 if strategy == "pairwise" else 1
+    exposure_by_node = {
+        node: sum(
+            assignment["bit_length"]
+            for assignment in assignments
+            if node in assignment["nodes"]
+        )
+        for node in NODES
+    }
+    maximum_node_bits = max(exposure_by_node.values(), default=0)
     total_required = sum(row["total_required_positions"] for row in verification_results)
     overall_checked = sum(row["checked_positions"] for row in verification_results)
     overall_matched = sum(row["matched_positions"] for row in verification_results)
@@ -626,6 +652,21 @@ def _run_partitioning(
     }
     attack_support = None
     if attack is not None:
+        partition_views = []
+        for node in NODES:
+            visible = [assignment for assignment in assignments if node in assignment["nodes"]]
+            visible_bits = sum(assignment["bit_length"] for assignment in visible)
+            partition_views.append({
+                "node": node,
+                "partition": visible[0]["partition"] if len(visible) == 1 else None,
+                "partitions": [assignment["partition"] for assignment in visible],
+                "visible_bits": visible_bits,
+                "visibility_percentage": round(visible_bits * 100 / anchor_impl.M, 2),
+                "position_rule": "; ".join(
+                    f'P{assignment["partition"]}: {assignment["position_rule"]}'
+                    for assignment in visible
+                ),
+            })
         attack_support = {
             "status": "ready_for_attacker_component",
             "requested_attack": attack,
@@ -635,15 +676,7 @@ def _run_partitioning(
                 "visibility_percentage": 100.0,
                 "records": len(rows),
             },
-            "partition_views": [{
-                "node": assignment["nodes"][0],
-                "partition": assignment["partition"],
-                "visible_bits": assignment["bit_length"],
-                "visibility_percentage": round(
-                    assignment["bit_length"] * 100 / anchor_impl.M, 2
-                ),
-                "position_rule": assignment["position_rule"],
-            } for assignment in assignments],
+            "partition_views": partition_views,
             "interface": (
                 "The defence prepares per-node partition views. The attacker component "
                 "must consume the selected view and return its own attack measurements."
@@ -659,8 +692,8 @@ def _run_partitioning(
         "attack_supported": attack_support is not None,
         "attack_executed": False,
         "attack_support": attack_support,
-        "placement": "single_copy",
-        "replication_factor": 1,
+        "placement": placement,
+        "replication_factor": replication_factor,
         "partition_count": partition_count,
         "bloom_filter_bits": anchor_impl.M,
         "nodes": list(NODES),
@@ -678,12 +711,15 @@ def _run_partitioning(
         },
         "all_reconstructed": bool(rows) and all(row["reconstructed"] for row in rows),
         "all_verified": bool(rows) and all(row["verified"] for row in rows),
-        "max_node_exposure_percent": round(largest_partition * 100 / anchor_impl.M, 2),
+        "max_node_exposure_percent": round(
+            maximum_node_bits * 100 / anchor_impl.M, 2
+        ),
         "rows": rows,
         "conclusion": (
             f"The Horizontal Partitioning defence used {STRATEGY_NAMES[strategy]} to "
             "distribute each complete Bloom-filter anchor across "
-            f"{partition_count} balanced partitions with one copy per node. "
+            f"{partition_count} balanced partitions with replication factor "
+            f"{replication_factor}. "
             "Partition-aware verification matched the complete-filter baseline without giving "
             "one node the entire bit array."
         ),
@@ -704,6 +740,14 @@ def run_interleaved_partitioning(
 ) -> dict:
     """Evaluate round-robin Interleaved Bit Partitioning."""
     return _run_partitioning("interleaved", attack, options)
+
+
+def run_pairwise_partitioning(
+    attack: str | None = None,
+    options: dict | None = None,
+) -> dict:
+    """Evaluate sequential ranges with pairwise partition replication."""
+    return _run_partitioning("pairwise", attack, options)
 
 
 # Backward-compatible name for code written before the strategy was named SBP.

@@ -313,6 +313,46 @@ def test_interleaved_partitioning_round_trip_and_verification():
     assert result["coverage_percentage"] == 100
 
 
+def test_pairwise_partitioning_replicates_partitions_and_survives_one_node_offline():
+    from certchain.anchors import BloomAnchor, record_items
+    from certchain.defenses.inference import (
+        PartitionedBloomStore, PartitionError, partition_anchor, reconstruct_filter, verify_items,
+    )
+
+    key = b"pairwise-partition-test-key"
+    impl = BloomAnchor(key)
+    tx = {"type": "student.upsert", "data": {"programme": "Software Engineering"},
+          "actor": "test", "at": "2026-01-01T00:00:00+00:00"}
+    anchor = impl.build(tx)
+    nodes = ("Node-A", "Node-B", "Node-C")
+    partitions = partition_anchor(
+        anchor, key, 3, nodes, record_id=29, strategy="pairwise"
+    )
+
+    assert [p["nodes"] for p in partitions] == [
+        ["Node-A", "Node-C"], ["Node-B", "Node-A"], ["Node-C", "Node-B"]
+    ]
+    assert all(p["strategy"] == "pairwise" for p in partitions)
+    assert all(p["placement"] == "pairwise_replication" for p in partitions)
+    assert all(p["replication_factor"] == 2 for p in partitions)
+    assert all(p["position_step"] == 1 for p in partitions)
+    assert reconstruct_filter(partitions, key).to_b64() == anchor["bits"]
+
+    store = PartitionedBloomStore(nodes)
+    store.add(partitions)
+    assert all(len(store.partitions_for_node(node, 29)) == 2 for node in nodes)
+    for offline in nodes:
+        active = [node for node in nodes if node != offline]
+        visible = store.partitions_for_record(29, active)
+        assert len(visible) == 3
+        assert verify_items(visible, key, record_items(tx)) is True
+
+    replica = store.stores["Node-C"][29][0]
+    replica["bits"] = ("A" if replica["bits"][0] != "A" else "B") + replica["bits"][1:]
+    with pytest.raises(PartitionError, match="replicated partition copies do not match"):
+        store.partitions_for_record(29)
+
+
 def test_partitioned_bloom_store_isolates_node_views():
     from certchain.anchors import BloomAnchor, record_items
     from certchain.defenses.inference import (
@@ -447,9 +487,37 @@ def test_interleaved_partitioning_defence_endpoint(site):
                for row in data["availability"][1:])
 
 
+def test_pairwise_partitioning_defence_endpoint(site):
+    data = site.test_client().post("/api/security/pairwise").get_json()
+
+    assert data["system"] == "bloom" and data["defense"] == "horizontal_partitioning"
+    assert data["strategy"] == "pairwise"
+    assert data["strategy_name"] == "Sequential Bit Partitioning with Pairwise Replication"
+    assert data["placement"] == "pairwise_replication" and data["replication_factor"] == 2
+    assert data["partition_count"] == 3 and data["blocks_partitioned"] > 0
+    assert [row["nodes"] for row in data["assignments"]] == [
+        ["Registry-Node", "Audit-Office-Node"],
+        ["Academic-Board-Node", "Registry-Node"],
+        ["Audit-Office-Node", "Academic-Board-Node"],
+    ]
+    assert data["all_reconstructed"] is True and data["all_verified"] is True
+    assert 66 < data["max_node_exposure_percent"] < 67
+    assert data["storage"]["total_partitions"] == data["blocks_partitioned"] * 6
+    assert all(row["partitions"] == data["blocks_partitioned"] * 2
+               for row in data["storage"]["nodes"])
+    assert data["metrics"]["communication_bytes_per_record"] == 1026
+    assert all(row["status"] == "available" for row in data["availability"])
+    assert all(row["verified_records"] == data["blocks_partitioned"]
+               for row in data["availability"])
+    assert all(row["unavailable_records"] == 0 for row in data["availability"])
+    assert all(row["available_filter_percentage"] == 100
+               for row in data["availability"])
+
+
 @pytest.mark.parametrize(("defense", "attack"), [
     ("sequential", "collusion"),
     ("interleaved", "pattern_mining"),
+    ("pairwise", "collusion"),
 ])
 def test_horizontal_partitioning_prepares_attack_support_without_execution(
     site, defense, attack,
@@ -474,7 +542,12 @@ def test_horizontal_partitioning_prepares_attack_support_without_execution(
     assert support["baseline"]["visibility_percentage"] == 100
     assert support["baseline"]["records"] == result["blocks_partitioned"]
     assert len(support["partition_views"]) == 3
-    assert all(33 < row["visibility_percentage"] < 34
+    expected_partitions = 2 if defense == "pairwise" else 1
+    expected_minimum_visibility = 66 if defense == "pairwise" else 33
+    assert all(len(row["partitions"]) == expected_partitions
+               for row in support["partition_views"])
+    assert all(expected_minimum_visibility < row["visibility_percentage"]
+               < expected_minimum_visibility + 1
                for row in support["partition_views"])
 
 

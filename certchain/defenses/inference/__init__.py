@@ -8,6 +8,7 @@ from .partitioning import (
     reconstruct_filter,
     run_horizontal_partitioning,
     run_interleaved_partitioning,
+    run_pairwise_partitioning,
     run_sequential_partitioning,
     verify_items,
     verify_items_detailed,
@@ -16,6 +17,7 @@ from .partitioning import (
 RUNNERS = {
     "sequential": run_sequential_partitioning,
     "interleaved": run_interleaved_partitioning,
+    "pairwise": run_pairwise_partitioning,
     "horizontal": run_sequential_partitioning,
 }
 
@@ -28,6 +30,7 @@ __all__ = [
     "reconstruct_filter",
     "run_horizontal_partitioning",
     "run_interleaved_partitioning",
+    "run_pairwise_partitioning",
     "run_sequential_partitioning",
     "verify_items",
     "verify_items_detailed",

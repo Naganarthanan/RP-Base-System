@@ -336,6 +336,7 @@ const SECURITY = {
       { id: "salt", name: "Salted hashing", desc: "Add a per-record salt before hashing each field." },
       { id: "sequential", name: "Sequential Partitioning", desc: "Split each Bloom-filter bit array into balanced contiguous ranges and assign one range to each node.", live: true },
       { id: "interleaved", name: "Interleaved Partitioning", desc: "Distribute alternating Bloom-filter bit positions across nodes in round-robin order.", live: true },
+      { id: "pairwise", name: "Pairwise Partitioning", desc: "Store each sequential Bloom-filter partition on two nodes so verification survives one unavailable node.", live: true },
       { id: "padding", name: "Field padding / k-anonymity", desc: "Pad the filter so field counts do not leak." },
     ],
   },
@@ -379,7 +380,7 @@ function defenseReport(r, c) {
     if (r.attack_support) {
       const selectedAttack = (c.attacks.find((x) => x.id === r.attack) || {}).name || r.attack;
       const viewRows = r.attack_support.partition_views.map((x) => `<tr>
-        <td>${esc(x.node)}</td><td>P${x.partition}</td><td class="num">${x.visible_bits}</td>
+        <td>${esc(x.node)}</td><td>${x.partitions.map((p) => `P${p}`).join(", ")}</td><td class="num">${x.visible_bits}</td>
         <td class="num">${percentage(x.visibility_percentage)}</td><td class="num">${esc(x.position_rule)}</td></tr>`).join("");
       attackSupport = `<div class="card stack"><div class="row spread"><h3>Attack support interface</h3>
           <span class="badge warn">Execution pending</span></div>
@@ -388,9 +389,10 @@ function defenseReport(r, c) {
         <tbody>${viewRows}</tbody></table></div><p class="small muted">${esc(r.attack_support.interface)}</p></div>`;
     }
     const passed = r.all_verified && r.all_reconstructed;
+    const placementLabel = r.placement === "pairwise_replication" ? "pairwise-replicated placement" : "single-copy placement";
     return `<div class="card stack"><div class="row spread"><h3>Horizontal Partitioning - ${esc(c.targetLabel)}</h3>
         <span class="badge ${passed ? "ok" : "bad"}">${passed ? "Validation passed" : "Validation failed"}</span></div>
-      <p class="small muted">${esc(r.strategy_name)} - ${r.partition_count} partitions - ${r.bloom_filter_bits} Bloom-filter bits - single-copy placement.</p>
+      <p class="small muted">${esc(r.strategy_name)} - ${r.partition_count} partitions - ${r.bloom_filter_bits} Bloom-filter bits - ${placementLabel}.</p>
       <div class="row"><span class="badge">${r.blocks_partitioned} blocks partitioned</span>
         <span class="badge ${r.all_reconstructed ? "ok" : "bad"}">Reconstruction ${r.all_reconstructed ? "passed" : "failed"}</span>
         <span class="badge ${r.all_verified ? "ok" : "bad"}">Verification ${r.all_verified ? "passed" : "failed"}</span>
@@ -402,7 +404,7 @@ function defenseReport(r, c) {
         <span class="badge">Communication ${r.metrics.communication_bytes_per_record} bytes/record</span></div></div>
       ${attackSupport}
       <div class="card stack"><h3>Partition assignment</h3>
-        <div class="table-wrap"><table><thead><tr><th>Partition</th><th class="num">Bit positions</th><th class="num">Bits</th><th>Assigned node</th></tr></thead>
+        <div class="table-wrap"><table><thead><tr><th>Partition</th><th class="num">Bit positions</th><th class="num">Bits</th><th>Assigned node(s)</th></tr></thead>
         <tbody>${assignments}</tbody></table></div></div>
       <div class="card stack"><h3>Temporary per-node stores</h3>
         <div class="table-wrap"><table><thead><tr><th>Node</th><th class="num">Stored partitions</th><th class="num">Payload bytes</th></tr></thead>
