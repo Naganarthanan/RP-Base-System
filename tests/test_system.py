@@ -501,3 +501,63 @@ def test_security_headers_and_spa(app):
     res = app.test_client().get("/")
     assert res.status_code == 200 and b"CertChain" in res.data
     assert "default-src 'self'" in res.headers["Content-Security-Policy"]
+
+
+# Reference-assisted fragment inference (known-record attack) ---------------------
+
+from certchain.attacks.inference import reference_similarity as refsim  # noqa: E402
+
+
+def test_hamming_similarity_matches_the_worked_example():
+    # Target 10100 vs reference 10110: 4 of 5 positions agree -> 80%.
+    assert refsim.hamming_similarity(0b10100, 0b10110, 5) == 80.0
+    assert refsim.hamming_similarity(0b10100, 0b10100, 5) == 100.0
+
+
+def test_fragments_cover_the_filter_and_observe_only_their_bits():
+    for n in refsim.PARTITIONS:
+        bounds = [refsim.fragment_bounds(4096, n, i) for i in range(n)]
+        assert bounds[0][0] == 0 and bounds[-1][1] == 4096
+        assert all(a[1] == b[0] for a, b in zip(bounds, bounds[1:]))
+    bits = 0b1011_0100_1011  # 12 bits, Bloom position p is bit p
+    assert refsim.observe(bits, *refsim.fragment_bounds(12, 3, 0)) == 0b1011
+    assert refsim.observe(bits, *refsim.fragment_bounds(12, 3, 1)) == 0b0100
+    with pytest.raises(ValueError):
+        refsim.fragment_bounds(4096, 3, 3)
+
+
+def test_class_scores_average_per_class_and_pick_the_strongest():
+    refs = [(0b10100, "IT"), (0b10110, "IT"), (0b01110, "SE"), (0b01010, "SE")]
+    scores = refsim.class_scores(0b10100, refs, 5)
+    assert scores == {"IT": 90.0, "SE": 30.0}
+    assert refsim.predict(scores) == "IT"
+
+
+def test_evaluation_metrics_and_confusion_matrix():
+    m = refsim.evaluate(["IT", "IT", "SE", "CS"], ["IT", "SE", "SE", "CS"], ["IT", "SE", "CS"])
+    assert m["accuracy"] == 0.75 and m["confusion"]["SE"]["IT"] == 1
+    assert m["per_class"]["IT"]["precision"] == 0.5 and m["per_class"]["SE"]["recall"] == 0.5
+
+
+def test_inference_engine_never_receives_ground_truth():
+    import inspect
+    for fn in (refsim.class_scores, refsim.predict, refsim.hamming_similarity):
+        assert "ground_truth" not in inspect.signature(fn).parameters
+
+
+def test_reference_similarity_attack_is_reproducible_and_covers_all_visibilities(site):
+    with site.app_context():
+        impl = site.config["SYSTEMS"]["bloom"].config["anchor"]
+        a = refsim.run_experiment(impl, per_class=30)
+        b = refsim.run_experiment(impl, per_class=30)
+    assert [e["accuracy"] for e in a["experiments"]] == [e["accuracy"] for e in b["experiments"]]
+    ratios = [e["visibility_ratio"] for e in a["experiments"]]
+    assert ratios == [1.0, 0.5, 0.3333, 0.25, 0.2]
+    assert a["experiments"][0]["accuracy"] > a["chance_accuracy"]
+
+
+def test_reference_similarity_endpoint(site):
+    data = site.test_client().post("/api/security/reference_similarity").get_json()
+    assert data["system"] == "bloom" and data["attack"] == "reference_similarity"
+    assert [e["experiment"] for e in data["experiments"]] == ["E1", "E2", "E3", "E4", "E5"]
+    assert data["config"]["records"] == 300
