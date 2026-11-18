@@ -325,6 +325,7 @@ const SECURITY = {
     attacks: [
       { id: "collusion", name: "Collusion among organisations", desc: "Node organisations pool their key shares to reconstruct the Bloom key.", live: true },
       { id: "pattern_mining", name: "Attack pattern mining", desc: "Link records by Bloom-filter similarity, without the key.", live: true },
+      { id: "reference_similarity", name: "Reference-assisted fragment inference", desc: "Infer a hidden programme from a full or 1/2–1/5 Bloom fragment using known records.", live: true },
       { id: "dictionary", name: "Dictionary attack", desc: "Hash candidate values and match them to the chain." },
       { id: "fieldmatch", name: "Per-field match leak", desc: "Read which field differs from a verify response." },
       { id: "frequency", name: "Frequency analysis", desc: "Count repeated hashes to rank likely values." },
@@ -613,6 +614,54 @@ function renderSecurity() {
         out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Attack pattern mining · ${esc(c.targetLabel)}</h3><span class="badge bad">${data.linkable_blocks} of ${data.total_blocks} blocks linkable</span></div>
           <p class="small muted">${esc(data.scenario)} ${data.clusters} linkable group(s) found from filter similarity alone — no key used.</p>
           <div class="table-wrap"><table><thead><tr><th>Linked group</th><th class="num">Records</th><th>Block numbers</th></tr></thead><tbody>${groups}</tbody></table></div></div>
+          <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
+        out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (err) {
+        out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;
+      } finally { button.disabled = false; button.textContent = original; }
+      return;
+    }
+
+    // Reference-assisted fragment inference: live component, Bloom filter system only.
+    if (securityTab === "inference" && attacks.includes("reference_similarity")) {
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "Running…";
+      try {
+        const data = await api("/api/security/reference_similarity", "POST", {});
+        const pct = (x) => `${(x * 100).toFixed(1)}%`;
+        const labels = Object.keys(data.config.classes);
+        const tone = (acc) => (acc > data.chance_accuracy + 0.1 ? "bad" : "ok");
+        const summary = data.experiments.map((e) => `<tr>
+            <td>${esc(e.experiment)} · ${esc(e.configuration)}</td>
+            <td class="num">${pct(e.visibility_ratio)}</td>
+            <td class="num">${e.observed_bits}</td>
+            <td class="num"><span class="badge ${tone(e.accuracy)}">${pct(e.accuracy)}</span></td>
+            <td class="num">${e.macro_precision.toFixed(3)}</td>
+            <td class="num">${e.macro_recall.toFixed(3)}</td>
+            <td class="num">${e.macro_f1.toFixed(3)}</td>
+            <td><span class="mono small">${labels.map((l) => `${l}:${e.programme_bits_in_fragment[l]}`).join(" ")}</span></td></tr>`).join("");
+        const details = data.experiments.map((e) => {
+          const cm = labels.map((a) => `<tr><th>${esc(a)}</th>${labels.map((p) => `<td class="num">${e.confusion[a][p]}</td>`).join("")}</tr>`).join("");
+          const pc = labels.map((l) => `<tr><td>${esc(l)}</td><td class="num">${e.per_class[l].precision.toFixed(3)}</td><td class="num">${e.per_class[l].recall.toFixed(3)}</td><td class="num">${e.per_class[l].f1.toFixed(3)}</td></tr>`).join("");
+          const samples = e.sample_results.map((r) => `<tr><td class="mono">${esc(r.target_id)}</td>
+              <td><span class="mono small">${labels.map((l) => `${l} ${r.scores[l].toFixed(2)}`).join(" · ")}</span></td>
+              <td>${esc(r.predicted)}</td><td>${esc(r.ground_truth)}</td>
+              <td>${r.correct ? `<span class="badge bad">Inferred</span>` : `<span class="badge ok">Missed</span>`}</td></tr>`).join("");
+          return `<details class="card"><summary><strong>${esc(e.experiment)} · ${esc(e.configuration)}</strong> — attacker sees ${esc(e.fragment)}, bits ${e.fragment_bits[0]}–${e.fragment_bits[1] - 1}</summary>
+            <div class="stack" style="margin-top:8px">
+              <div class="table-wrap"><table><thead><tr><th>Actual ↓ / Predicted →</th>${labels.map((l) => `<th class="num">${esc(l)}</th>`).join("")}</tr></thead><tbody>${cm}</tbody></table></div>
+              <div class="table-wrap"><table><thead><tr><th>Class</th><th class="num">Precision</th><th class="num">Recall</th><th class="num">F1</th></tr></thead><tbody>${pc}</tbody></table></div>
+              <div class="table-wrap"><table><thead><tr><th>Target</th><th>Class scores (mean Hamming similarity %)</th><th>Predicted</th><th>Ground truth</th><th>Result</th></tr></thead><tbody>${samples}</tbody></table></div>
+            </div></details>`;
+        }).join("");
+        const cfg = data.config;
+        out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Reference-assisted fragment inference · ${esc(c.targetLabel)}</h3><span class="badge">Chance: ${pct(data.chance_accuracy)}</span></div>
+          <p class="small muted">${esc(data.scenario)}</p>
+          <p class="small muted">${cfg.records} synthetic records (${cfg.reference_records} reference, ${cfg.target_records} target) · target attribute: ${esc(cfg.target_attribute)} · Bloom m=${cfg.bloom_m}, k=${cfg.bloom_k} · ${esc(cfg.similarity)} similarity, ${esc(cfg.aggregation)} · seed ${cfg.seed}</p>
+          <div class="table-wrap"><table><thead><tr><th>Configuration</th><th class="num">Visibility</th><th class="num">Bits seen</th><th class="num">Accuracy</th><th class="num">Precision</th><th class="num">Recall</th><th class="num">F1</th><th>Programme bits in fragment</th></tr></thead><tbody>${summary}</tbody></table></div>
+          <p class="small muted">Precision, recall and F1 are macro averages over the classes. "Programme bits in fragment" is an evaluation-only diagnostic: how many of each programme's Bloom bits fall in the observed fragment (the attacker never sees it).</p></div>
+          ${details}
           <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
         out.scrollIntoView({ behavior: "smooth", block: "nearest" });
       } catch (err) {
