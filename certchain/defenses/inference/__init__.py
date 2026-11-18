@@ -1,13 +1,38 @@
-"""Inference defences (Bloom filter system side).
+"""Inference defences for the Bloom-filter system."""
+from .partitioning import (
+    PartitionedBloomStore,
+    PartitionError,
+    PartitionUnavailable,
+    partition_anchor,
+    partition_filter,
+    reconstruct_filter,
+    run_horizontal_partitioning,
+    run_interleaved_partitioning,
+    run_pairwise_partitioning,
+    run_sequential_partitioning,
+    verify_items,
+    verify_items_detailed,
+)
 
-SCAFFOLD ONLY — no defence is implemented yet. To add one:
-  1. Create a module in this folder, e.g. salted.py or horizontal.py.
-  2. Write a function that applies/evaluates the defence and returns a JSON-able dict.
-  3. Register it in RUNNERS below, keyed by the defence id the frontend sends.
+RUNNERS = {
+    "sequential": run_sequential_partitioning,
+    "interleaved": run_interleaved_partitioning,
+    "pairwise": run_pairwise_partitioning,
+    "horizontal": run_sequential_partitioning,
+}
 
-Shared helpers: ``from ..common import systems, BloomAnchor, field_item, ...``.
-Candidate defence ids (from the UI): keyedbloom, salt, horizontal, padding.
-"""
-RUNNERS: dict = {}
-
-__all__ = ["RUNNERS"]
+__all__ = [
+    "PartitionedBloomStore",
+    "PartitionError",
+    "PartitionUnavailable",
+    "partition_anchor",
+    "partition_filter",
+    "reconstruct_filter",
+    "run_horizontal_partitioning",
+    "run_interleaved_partitioning",
+    "run_pairwise_partitioning",
+    "run_sequential_partitioning",
+    "verify_items",
+    "verify_items_detailed",
+    "RUNNERS",
+]

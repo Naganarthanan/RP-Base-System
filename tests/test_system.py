@@ -257,6 +257,300 @@ def test_pattern_mining_attack_links_records_on_the_bloom_system(site):
     assert data["clusters"] == len(data["rows"]) or len(data["rows"]) == 6
 
 
+# ---- inference defence ----------------------------------------------------
+def test_sequential_partitioning_round_trip():
+    from certchain.anchors import BloomAnchor
+    from certchain.defenses.inference import partition_anchor, reconstruct_filter
+
+    key = b"partition-test-key"
+    impl = BloomAnchor(key)
+    tx = {"type": "student.upsert", "data": {"programme": "Software Engineering"},
+          "actor": "test", "at": "2026-01-01T00:00:00+00:00"}
+    anchor = impl.build(tx)
+    partitions = partition_anchor(anchor, key, 3, ("Node-A", "Node-B", "Node-C"), record_id=17)
+
+    assert len(partitions) == 3
+    assert [p["nodes"] for p in partitions] == [["Node-A"], ["Node-B"], ["Node-C"]]
+    assert all(p["strategy"] == "sequential" for p in partitions)
+    assert all(p["placement"] == "single_copy" for p in partitions)
+    assert all(p["replication_factor"] == 1 for p in partitions)
+    assert all(p["position_step"] == 1 for p in partitions)
+    assert sum(p["bit_length"] for p in partitions) == impl.M
+    assert max(p["bit_length"] for p in partitions) - min(p["bit_length"] for p in partitions) <= 1
+    assert all(p["record_id"] == 17 for p in partitions)
+    assert reconstruct_filter(partitions, key).to_b64() == anchor["bits"]
+
+
+def test_interleaved_partitioning_round_trip_and_verification():
+    from certchain.anchors import BloomAnchor, record_items
+    from certchain.defenses.inference import (
+        partition_anchor, reconstruct_filter, verify_items_detailed,
+    )
+
+    key = b"interleaved-partition-test-key"
+    impl = BloomAnchor(key)
+    tx = {"type": "student.upsert", "data": {"programme": "Software Engineering"},
+          "actor": "test", "at": "2026-01-01T00:00:00+00:00"}
+    anchor = impl.build(tx)
+    partitions = partition_anchor(
+        anchor,
+        key,
+        3,
+        ("Node-A", "Node-B", "Node-C"),
+        record_id=23,
+        strategy="interleaved",
+    )
+
+    assert [p["start_bit"] for p in partitions] == [0, 1, 2]
+    assert [p["position_step"] for p in partitions] == [3, 3, 3]
+    assert [p["bit_length"] for p in partitions] == [1366, 1365, 1365]
+    assert all(p["strategy"] == "interleaved" for p in partitions)
+    assert reconstruct_filter(partitions, key).to_b64() == anchor["bits"]
+
+    result = verify_items_detailed(partitions, key, record_items(tx))
+    assert result["status"] == "verified"
+    assert result["match_percentage"] == 100
+    assert result["coverage_percentage"] == 100
+
+
+def test_pairwise_partitioning_replicates_partitions_and_survives_one_node_offline():
+    from certchain.anchors import BloomAnchor, record_items
+    from certchain.defenses.inference import (
+        PartitionedBloomStore, PartitionError, partition_anchor, reconstruct_filter, verify_items,
+    )
+
+    key = b"pairwise-partition-test-key"
+    impl = BloomAnchor(key)
+    tx = {"type": "student.upsert", "data": {"programme": "Software Engineering"},
+          "actor": "test", "at": "2026-01-01T00:00:00+00:00"}
+    anchor = impl.build(tx)
+    nodes = ("Node-A", "Node-B", "Node-C")
+    partitions = partition_anchor(
+        anchor, key, 3, nodes, record_id=29, strategy="pairwise"
+    )
+
+    assert [p["nodes"] for p in partitions] == [
+        ["Node-A", "Node-C"], ["Node-B", "Node-A"], ["Node-C", "Node-B"]
+    ]
+    assert all(p["strategy"] == "pairwise" for p in partitions)
+    assert all(p["placement"] == "pairwise_replication" for p in partitions)
+    assert all(p["replication_factor"] == 2 for p in partitions)
+    assert all(p["position_step"] == 1 for p in partitions)
+    assert reconstruct_filter(partitions, key).to_b64() == anchor["bits"]
+
+    store = PartitionedBloomStore(nodes)
+    store.add(partitions)
+    assert all(len(store.partitions_for_node(node, 29)) == 2 for node in nodes)
+    for offline in nodes:
+        active = [node for node in nodes if node != offline]
+        visible = store.partitions_for_record(29, active)
+        assert len(visible) == 3
+        assert verify_items(visible, key, record_items(tx)) is True
+
+    replica = store.stores["Node-C"][29][0]
+    replica["bits"] = ("A" if replica["bits"][0] != "A" else "B") + replica["bits"][1:]
+    with pytest.raises(PartitionError, match="replicated partition copies do not match"):
+        store.partitions_for_record(29)
+
+
+def test_partitioned_bloom_store_isolates_node_views():
+    from certchain.anchors import BloomAnchor, record_items
+    from certchain.defenses.inference import (
+        PartitionedBloomStore, PartitionUnavailable, partition_anchor, verify_items,
+    )
+
+    key = b"partition-test-key"
+    impl = BloomAnchor(key)
+    tx = {"type": "student.upsert", "data": {"programme": "Software Engineering"},
+          "actor": "test", "at": "2026-01-01T00:00:00+00:00"}
+    nodes = ("Node-A", "Node-B", "Node-C")
+    partitions = partition_anchor(impl.build(tx), key, 3, nodes, record_id=17)
+    store = PartitionedBloomStore(nodes)
+    store.add(partitions)
+
+    assert [p["partition_index"] for p in store.partitions_for_node("Node-A", 17)] == [0]
+    assert [p["partition_index"] for p in store.partitions_for_node("Node-B", 17)] == [1]
+    assert [p["partition_index"] for p in store.partitions_for_node("Node-C", 17)] == [2]
+    assert verify_items(store.partitions_for_record(17), key, record_items(tx)) is True
+    with pytest.raises(PartitionUnavailable):
+        verify_items(store.partitions_for_record(17, ("Node-A", "Node-B")), key, record_items(tx))
+
+
+def test_partition_aware_verification_and_missing_node():
+    from certchain.anchors import BloomAnchor, record_items
+    from certchain.defenses.inference import (
+        PartitionUnavailable, partition_anchor, verify_items, verify_items_detailed,
+    )
+
+    key = b"partition-test-key"
+    impl = BloomAnchor(key)
+    tx = {"type": "student.upsert", "data": {"programme": "Software Engineering"},
+          "actor": "test", "at": "2026-01-01T00:00:00+00:00"}
+    partitions = partition_anchor(impl.build(tx), key, 3)
+
+    assert verify_items(partitions, key, record_items(tx)) is True
+    assert verify_items(partitions, key, ['student.upsert.programme="Medicine"']) is False
+    complete = verify_items_detailed(partitions, key, record_items(tx))
+    assert complete["status"] == "verified"
+    assert complete["match_percentage"] == 100
+    assert complete["coverage_percentage"] == 100
+    assert sum(row["required_positions"] for row in complete["contributions"]) == complete[
+        "total_required_positions"
+    ]
+
+    negative = verify_items_detailed(
+        partitions, key, ['student.upsert.programme="Medicine"']
+    )
+    assert negative["status"] == "not_matched"
+    assert negative["mismatched_positions"] > 0
+    assert negative["coverage_percentage"] == 100
+
+    partial = verify_items_detailed(partitions[:-1], key, record_items(tx))
+    assert partial["status"] == "inconclusive"
+    assert partial["match_percentage"] == 100
+    assert 0 < partial["coverage_percentage"] < 100
+    assert partial["unavailable_positions"] > 0
+    with pytest.raises(PartitionUnavailable):
+        verify_items(partitions[:-1], key, record_items(tx))
+
+
+def test_sequential_partitioning_defence_endpoint(site):
+    data = site.test_client().post("/api/security/sequential").get_json()
+
+    assert data["system"] == "bloom" and data["defense"] == "horizontal_partitioning"
+    assert data["strategy"] == "sequential" and data["placement"] == "single_copy"
+    assert data["replication_factor"] == 1
+    assert data["partition_count"] == 3 and data["blocks_partitioned"] > 0
+    assert data["bloom_filter_bits"] == 4096
+    assert [row["bit_length"] for row in data["assignments"]] == [1366, 1365, 1365]
+    assert [row["nodes"] for row in data["assignments"]] == [
+        ["Registry-Node"], ["Academic-Board-Node"], ["Audit-Office-Node"]
+    ]
+    assert data["all_reconstructed"] is True and data["all_verified"] is True
+    assert 0 < data["max_node_exposure_percent"] < 100
+    assert data["storage"]["total_partitions"] == data["blocks_partitioned"] * 3
+    assert all(row["partitions"] == data["blocks_partitioned"] for row in data["storage"]["nodes"])
+    assert data["metrics"]["communication_bytes_per_record"] == 513
+    assert data["metrics"]["partition_generation_ms"] >= 0
+    assert data["metrics"]["average_verification_ms"] >= 0
+    assert data["verification"]["status"] == "verified"
+    assert data["verification"]["match_percentage"] == 100
+    assert data["verification"]["coverage_percentage"] == 100
+    assert data["verification"]["baseline_agreement"] is True
+    assert all(row["local_match_percentage"] == 100
+               for row in data["verification"]["contributions"])
+    assert all(row["coverage_percentage"] == 100
+               for row in data["verification"]["contributions"])
+    assert 99.9 <= sum(row["position_share_percentage"]
+                       for row in data["verification"]["contributions"]) <= 100.1
+    assert data["availability"][0]["status"] == "available"
+    assert data["availability"][0]["verified_records"] == data["blocks_partitioned"]
+    assert data["availability"][0]["match_percentage"] == 100
+    assert data["availability"][0]["verification_coverage_percentage"] == 100
+    assert data["availability"][0]["available_filter_percentage"] == 100
+    assert all(row["status"] == "inconclusive" for row in data["availability"][1:])
+    assert all(row["match_percentage"] == 100 for row in data["availability"][1:])
+    assert all(0 < row["verification_coverage_percentage"] < 100
+               for row in data["availability"][1:])
+    assert all(66 < row["available_filter_percentage"] < 67
+               for row in data["availability"][1:])
+    assert all(row["unavailable_records"] == data["blocks_partitioned"]
+               for row in data["availability"][1:])
+
+
+def test_horizontal_partitioning_endpoint_remains_an_alias(site):
+    data = site.test_client().post("/api/security/horizontal").get_json()
+
+    assert data["defense"] == "horizontal_partitioning"
+
+
+def test_interleaved_partitioning_defence_endpoint(site):
+    data = site.test_client().post("/api/security/interleaved").get_json()
+
+    assert data["system"] == "bloom" and data["defense"] == "horizontal_partitioning"
+    assert data["strategy"] == "interleaved"
+    assert data["strategy_name"] == "Interleaved Bit Partitioning"
+    assert data["placement"] == "single_copy" and data["replication_factor"] == 1
+    assert data["partition_count"] == 3 and data["blocks_partitioned"] > 0
+    assert [row["start_bit"] for row in data["assignments"]] == [0, 1, 2]
+    assert [row["position_step"] for row in data["assignments"]] == [3, 3, 3]
+    assert [row["bit_length"] for row in data["assignments"]] == [1366, 1365, 1365]
+    assert data["assignments"][0]["position_rule"] == "0, 3, ... 4095"
+    assert data["all_reconstructed"] is True and data["all_verified"] is True
+    assert data["verification"]["status"] == "verified"
+    assert data["verification"]["baseline_agreement"] is True
+    assert data["verification"]["match_percentage"] == 100
+    assert data["verification"]["coverage_percentage"] == 100
+    assert data["availability"][0]["status"] == "available"
+    assert all(row["status"] == "inconclusive" for row in data["availability"][1:])
+    assert all(66 < row["available_filter_percentage"] < 67
+               for row in data["availability"][1:])
+
+
+def test_pairwise_partitioning_defence_endpoint(site):
+    data = site.test_client().post("/api/security/pairwise").get_json()
+
+    assert data["system"] == "bloom" and data["defense"] == "horizontal_partitioning"
+    assert data["strategy"] == "pairwise"
+    assert data["strategy_name"] == "Sequential Bit Partitioning with Pairwise Replication"
+    assert data["placement"] == "pairwise_replication" and data["replication_factor"] == 2
+    assert data["partition_count"] == 3 and data["blocks_partitioned"] > 0
+    assert [row["nodes"] for row in data["assignments"]] == [
+        ["Registry-Node", "Audit-Office-Node"],
+        ["Academic-Board-Node", "Registry-Node"],
+        ["Audit-Office-Node", "Academic-Board-Node"],
+    ]
+    assert data["all_reconstructed"] is True and data["all_verified"] is True
+    assert 66 < data["max_node_exposure_percent"] < 67
+    assert data["storage"]["total_partitions"] == data["blocks_partitioned"] * 6
+    assert all(row["partitions"] == data["blocks_partitioned"] * 2
+               for row in data["storage"]["nodes"])
+    assert data["metrics"]["communication_bytes_per_record"] == 1026
+    assert all(row["status"] == "available" for row in data["availability"])
+    assert all(row["verified_records"] == data["blocks_partitioned"]
+               for row in data["availability"])
+    assert all(row["unavailable_records"] == 0 for row in data["availability"])
+    assert all(row["available_filter_percentage"] == 100
+               for row in data["availability"])
+
+
+@pytest.mark.parametrize(("defense", "attack"), [
+    ("sequential", "collusion"),
+    ("interleaved", "pattern_mining"),
+    ("pairwise", "collusion"),
+])
+def test_horizontal_partitioning_prepares_attack_support_without_execution(
+    site, defense, attack,
+):
+    response = site.test_client().post("/api/security/defend", json={
+        "check": "inference",
+        "attack": attack,
+        "defenses": [defense],
+    })
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["attack"] == attack and data["unavailable"] == []
+    assert len(data["results"]) == 1
+
+    result = data["results"][0]
+    support = result["attack_support"]
+    assert result["strategy"] == defense
+    assert result["attack"] == attack and result["attack_supported"] is True
+    assert result["attack_executed"] is False
+    assert support["status"] == "ready_for_attacker_component"
+    assert support["requested_attack"] == attack and support["attack_executed"] is False
+    assert support["baseline"]["visibility_percentage"] == 100
+    assert support["baseline"]["records"] == result["blocks_partitioned"]
+    assert len(support["partition_views"]) == 3
+    expected_partitions = 2 if defense == "pairwise" else 1
+    expected_minimum_visibility = 66 if defense == "pairwise" else 33
+    assert all(len(row["partitions"]) == expected_partitions
+               for row in support["partition_views"])
+    assert all(expected_minimum_visibility < row["visibility_percentage"]
+               < expected_minimum_visibility + 1
+               for row in support["partition_views"])
+
+
 # ---- concurrency and headers ----------------------------------------------
 def test_session_survives_concurrent_chain_reads(app):
     failures = []
