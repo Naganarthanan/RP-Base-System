@@ -5,11 +5,26 @@ RUNNERS below. The key is the check-kind the frontend posts to /api/security/<ki
 """
 from .collusion_attack import run_manipulation_collusion
 from .forgery import run_manipulation
+from .partition_attacks import (
+    sequence_rewrite_collusion,
+    odd_node_hijack,
+    k_group_tampering,
+)
 
 RUNNERS = {
     "manipulation": run_manipulation,
     "manipulation_collusion": run_manipulation_collusion,
     "collusion_manipulation": run_manipulation_collusion,
+    "sequence_rewrite_collusion": sequence_rewrite_collusion,
+    "odd_node_hijack": odd_node_hijack,
+    "k_group_tampering": k_group_tampering,
 }
 
-__all__ = ["run_manipulation", "run_manipulation_collusion", "RUNNERS"]
+__all__ = [
+    "run_manipulation",
+    "run_manipulation_collusion",
+    "sequence_rewrite_collusion",
+    "odd_node_hijack",
+    "k_group_tampering",
+    "RUNNERS",
+]

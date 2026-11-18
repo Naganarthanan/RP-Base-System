@@ -301,14 +301,18 @@ const SECURITY = {
     target: "conventional", targetLabel: "Conventional system",
     attacks: [
       { id: "collusion", name: "Collusion among organisations", desc: "Node organisations pool keys and consensus to pass a tampered record.", live: true },
+      { id: "sequence_rewrite_collusion", name: "Sequence-Rewrite Collusion", desc: "Exploits strict cyclic sequential storage (Single-sequence).", live: true },
+      { id: "odd_node_hijack", name: "Odd-Node Hijack", desc: "Targets the subset of nodes holding odd-numbered blocks (Single-odd).", live: true },
+      { id: "k_group_tampering", name: "K-Group Tampering", desc: "Targets k-group boundaries to test replica agreement (k-sequence).", live: true },
       { id: "asset", name: "Asset substitution", desc: "Swap the logo, seal or signature on a certificate." },
       { id: "field", name: "Field rewrite", desc: "Edit a record field and recompute its hash." },
       { id: "node", name: "Node copy rewrite", desc: "A compromised organisation rewrites its own chain copy." },
       { id: "qr", name: "QR / metadata swap", desc: "Repoint the QR code or alter the file metadata." },
     ],
     defenses: [
-      { id: "vertical", name: "Vertical partitioning", desc: "Split anchors across linked blocks (inter-block).", live: true },
-      // { id: "vertical", name: "Vertical partitioning", desc: "Split anchors across linked blocks (inter-block)." },
+      { id: "single_sequence", name: "Single-sequence partitioning", desc: "Block i goes to node ((i-1) mod n)+1, cycling in order.", live: true },
+      { id: "single_odd", name: "Single-odd partitioning", desc: "Blocks follow an odd-numbered node order." },
+      { id: "k_sequence", name: "k-sequence partitioning", desc: "Each block is replicated on k nodes in sequence." },
       { id: "forensic", name: "OCR / forensic asset check", desc: "Verify the logo, seal and signature images." },
       { id: "consensus", name: "Consensus threshold", desc: "Require more nodes to agree before accepting." },
       { id: "keyed", name: "Keyed anchor (HMAC)", desc: "Sign each anchor with a secret key." },
@@ -547,6 +551,63 @@ function renderSecurity() {
         } finally { button.disabled = false; button.textContent = original; }
       }
       out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+
+    // Partitioning manipulation attacks (Sequence-Rewrite, Odd-Node, K-Group):
+    const partitionAttackIds = ["sequence_rewrite_collusion", "odd_node_hijack", "k_group_tampering"];
+    const chosenPartitionAttacks = attacks.filter((id) => partitionAttackIds.includes(id));
+    if (securityTab === "manipulation" && chosenPartitionAttacks.length) {
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "Running…";
+      try {
+        let resultsHtml = "";
+        for (const atkId of chosenPartitionAttacks) {
+          const payload = {
+            target_block: 3,
+            category: "content",
+            n: 4,
+            k: 2,
+            head_pin: false,
+          };
+          const data = await api(`/api/security/${atkId}`, "POST", payload);
+          const asrPct = (data.asr * 100).toFixed(1);
+          const dePct = (data.defense_effectiveness * 100).toFixed(1);
+          const isBypassed = data.result === "Success";
+          const findingText = data.first_finding ? esc(data.first_finding.detail) : "None (Cross-reference integrity held)";
+
+          resultsHtml += `<div class="card stack">
+            <div class="row spread">
+              <div>
+                <h3>${esc(data.strategy)}</h3>
+                <p class="small muted">Target Defense: <strong>${esc(data.defense)}</strong> · Target Block: <strong>Block ${data.target_block}</strong></p>
+              </div>
+              <span class="badge ${isBypassed ? "bad" : "ok"}">${isBypassed ? "Attack Succeeded (Defense Bypassed)" : "Attack Blocked (Tampering Detected)"}</span>
+            </div>
+            <div class="row" style="gap: 12px; margin: 6px 0;">
+              <span class="badge ${data.asr > 0 ? "bad" : "ok"}">ASR: ${asrPct}%</span>
+              <span class="badge ${data.defense_effectiveness > 0 ? "ok" : "bad"}">DE (Defense Effectiveness): ${dePct}%</span>
+              <span class="badge">${esc(data.verification_status)}</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <tbody>
+                  <tr><th>Tampering Category</th><td>${esc(data.tampering_category)}</td></tr>
+                  <tr><th>Colluding Nodes</th><td><span class="mono">${esc(data.colluder_names ? data.colluder_names.join(", ") : data.colluders.join(", "))}</span></td></tr>
+                  <tr><th>Blocks Rewritten</th><td>${data.blocks_rewritten} block(s)</td></tr>
+                  <tr><th>Detection Finding</th><td><span class="small ${data.first_finding ? "warn-text" : "muted"}">${findingText}</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="card" style="margin-top: 6px;"><strong>Evaluation Log.</strong> <span class="mono small">${esc(data.log)}</span></div>
+          </div>`;
+        }
+        out.innerHTML = selection + resultsHtml;
+        out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (err) {
+        out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;
+      } finally { button.disabled = false; button.textContent = original; }
       return;
     }
 
