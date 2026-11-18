@@ -333,7 +333,8 @@ const SECURITY = {
     defenses: [
       { id: "keyedbloom", name: "Keyed Bloom filter", desc: "Derive bit positions from HMAC under a secret key." },
       { id: "salt", name: "Salted hashing", desc: "Add a per-record salt before hashing each field." },
-      { id: "sequential", name: "Horizontal Partitioning", desc: "Use Sequential Bit Partitioning to split each Bloom-filter bit array into balanced ranges and assign one range to each node.", live: true, standalone: true },
+      { id: "sequential", name: "Sequential Partitioning", desc: "Split each Bloom-filter bit array into balanced contiguous ranges and assign one range to each node.", live: true },
+      { id: "interleaved", name: "Interleaved Partitioning", desc: "Distribute alternating Bloom-filter bit positions across nodes in round-robin order.", live: true },
       { id: "padding", name: "Field padding / k-anonymity", desc: "Pad the filter so field counts do not leak." },
     ],
   },
@@ -355,7 +356,7 @@ function defenseReport(r, c) {
   if (r.defense === "horizontal_partitioning") {
     const percentage = (value) => value == null ? "N/A" : `${value}%`;
     const assignments = r.assignments.map((x) => `<tr>
-      <td>P${x.partition}</td><td class="num">${x.start_bit}-${x.end_bit}</td><td class="num">${x.bit_length}</td>
+      <td>P${x.partition}</td><td class="num">${esc(x.position_rule)}</td><td class="num">${x.bit_length}</td>
       <td>${esc(x.nodes.join(", "))}</td></tr>`).join("");
     const nodeStorage = r.storage.nodes.map((x) => `<tr><td>${esc(x.node)}</td>
       <td class="num">${x.partitions}</td><td class="num">${x.payload_bytes}</td></tr>`).join("");
@@ -373,10 +374,22 @@ function defenseReport(r, c) {
       <td class="num">${percentage(x.available_filter_percentage)}</td>
       <td class="num">${x.verified_records}</td><td class="num">${x.unavailable_records}</td>
       <td><span class="badge ${x.status === "available" ? "ok" : "warn"}">${esc(x.status)}</span></td></tr>`).join("");
+    let attackSupport = "";
+    if (r.attack_support) {
+      const selectedAttack = (c.attacks.find((x) => x.id === r.attack) || {}).name || r.attack;
+      const viewRows = r.attack_support.partition_views.map((x) => `<tr>
+        <td>${esc(x.node)}</td><td>P${x.partition}</td><td class="num">${x.visible_bits}</td>
+        <td class="num">${percentage(x.visibility_percentage)}</td><td class="num">${esc(x.position_rule)}</td></tr>`).join("");
+      attackSupport = `<div class="card stack"><div class="row spread"><h3>Attack support interface</h3>
+          <span class="badge warn">Execution pending</span></div>
+        <p class="small muted">Selected attack: <strong>${esc(selectedAttack)}</strong>. The defence prepared the complete-filter baseline and controlled per-node views, but it did not execute attack logic.</p>
+        <div class="table-wrap"><table><thead><tr><th>Node view</th><th>Partition</th><th class="num">Visible bits</th><th class="num">Visibility</th><th class="num">Positions</th></tr></thead>
+        <tbody>${viewRows}</tbody></table></div><p class="small muted">${esc(r.attack_support.interface)}</p></div>`;
+    }
     const passed = r.all_verified && r.all_reconstructed;
     return `<div class="card stack"><div class="row spread"><h3>Horizontal Partitioning - ${esc(c.targetLabel)}</h3>
         <span class="badge ${passed ? "ok" : "bad"}">${passed ? "Validation passed" : "Validation failed"}</span></div>
-      <p class="small muted">Sequential Bit Partitioning - ${r.partition_count} partitions - ${r.bloom_filter_bits} Bloom-filter bits - single-copy placement.</p>
+      <p class="small muted">${esc(r.strategy_name)} - ${r.partition_count} partitions - ${r.bloom_filter_bits} Bloom-filter bits - single-copy placement.</p>
       <div class="row"><span class="badge">${r.blocks_partitioned} blocks partitioned</span>
         <span class="badge ${r.all_reconstructed ? "ok" : "bad"}">Reconstruction ${r.all_reconstructed ? "passed" : "failed"}</span>
         <span class="badge ${r.all_verified ? "ok" : "bad"}">Verification ${r.all_verified ? "passed" : "failed"}</span>
@@ -386,8 +399,9 @@ function defenseReport(r, c) {
         <span class="badge">Maximum node exposure ${r.max_node_exposure_percent}%</span>
         <span class="badge">Average verify ${r.metrics.average_verification_ms} ms</span>
         <span class="badge">Communication ${r.metrics.communication_bytes_per_record} bytes/record</span></div></div>
+      ${attackSupport}
       <div class="card stack"><h3>Partition assignment</h3>
-        <div class="table-wrap"><table><thead><tr><th>Partition</th><th class="num">Bit range</th><th class="num">Bits</th><th>Assigned node</th></tr></thead>
+        <div class="table-wrap"><table><thead><tr><th>Partition</th><th class="num">Bit positions</th><th class="num">Bits</th><th>Assigned node</th></tr></thead>
         <tbody>${assignments}</tbody></table></div></div>
       <div class="card stack"><h3>Temporary per-node stores</h3>
         <div class="table-wrap"><table><thead><tr><th>Node</th><th class="num">Stored partitions</th><th class="num">Payload bytes</th></tr></thead>
@@ -484,14 +498,18 @@ function renderSecurity() {
 
   const updateSummary = () => {
     const d = picked("defense").map((i) => i.value);
+    const a = picked("attack").map((i) => i.value);
     if (!d.length) {
       summary.textContent = "No defence selected — baseline run.";
       return;
     }
     const allLive = d.every((id) => (c.defenses.find((x) => x.id === id) || {}).live);
-    summary.textContent = allLive
-      ? `${d.length} live defence${d.length === 1 ? "" : "s"} selected — ready to run.`
-      : `${d.length} defence${d.length === 1 ? "" : "s"} selected — some are not connected.`;
+    const hasLiveAttack = a.some((id) => (c.attacks.find((x) => x.id === id) || {}).live);
+    summary.textContent = !allLive
+      ? `${d.length} defence${d.length === 1 ? "" : "s"} selected — some are not connected.`
+      : hasLiveAttack
+        ? `${d.length} live defence${d.length === 1 ? "" : "s"} selected — ready to run.`
+        : `${d.length} live defence${d.length === 1 ? "" : "s"} selected — select a live attack.`;
   };
   root.querySelectorAll('input[type="checkbox"]').forEach((i) => { i.onchange = updateSummary; });
 
@@ -511,11 +529,9 @@ function renderSecurity() {
       <div class="sel-row"><span class="small muted">Defence</span><div class="row">${chips("defense", defenses)}</div></div></div>`;
 
     if (defenses.length) {
-      // Standalone defences validate their mechanism. Other live defences run against a live attack.
+      // Live defences run against the selected live attack through the shared backend endpoint.
       const isLive = (list, id) => (list.find((x) => x.id === id) || {}).live;
-      const isStandalone = (id) => (c.defenses.find((x) => x.id === id) || {}).standalone;
-      const standaloneDefs = defenses.filter((id) => isLive(c.defenses, id) && isStandalone(id));
-      const attackDefs = defenses.filter((id) => isLive(c.defenses, id) && !isStandalone(id));
+      const attackDefs = defenses.filter((id) => isLive(c.defenses, id));
       const pending = defenses.filter((id) => !isLive(c.defenses, id));
       const liveAttacks = attacks.filter((id) => isLive(c.attacks, id));
       let html = selection;
@@ -523,26 +539,17 @@ function renderSecurity() {
         html += `<div class="card stack"><div class="row"><span class="badge warn">Pick an attack</span></div>
           <p>Choose a live attack to run the selected defence against.</p></div>`;
       }
-      if (standaloneDefs.length && attacks.length) {
-        html += `<div class="card stack"><div class="row"><span class="badge warn">Structural validation</span></div>
-          <p class="small muted">Horizontal Partitioning is validated independently in this run. The selected attack is not yet executed against per-node partition storage.</p></div>`;
-      }
       if (pending.length) {
         html += `<div class="card stack"><div class="row"><span class="badge warn">Not connected yet</span> ${chips("defense", pending)}</div>
           <p class="small muted">These defences are still placeholders.</p></div>`;
       }
       out.innerHTML = html;
-      if (standaloneDefs.length || (attackDefs.length && liveAttacks.length)) {
+      if (liveAttacks.length && attackDefs.length) {
         button.disabled = true;
         const original = button.textContent;
         button.textContent = "Running…";
         try {
-          for (const defense of standaloneDefs) {
-            const data = await api(`/api/security/${defense}`, "POST", {});
-            out.insertAdjacentHTML("beforeend", defenseReport(data, c));
-          }
           for (const attack of liveAttacks) {
-            if (!attackDefs.length) break;
             const data = await api("/api/security/defend", "POST", { check: securityTab, attack, defenses: attackDefs });
             data.results.forEach((r) => { out.insertAdjacentHTML("beforeend", defenseReport(r, c)); });
           }

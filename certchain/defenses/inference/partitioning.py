@@ -1,9 +1,9 @@
-"""Sequential Bit Partitioning for keyed Bloom-filter anchors.
+"""Horizontal partitioning strategies for keyed Bloom-filter anchors.
 
-The complete bit array is split into contiguous ranges. Each range is assigned
-as a single copy to one participating node, so no single node needs the complete
-representation. Verification checks each required bit in the partition that
-owns that bit; it does not rebuild the complete filter at a node.
+Sequential partitioning uses balanced contiguous ranges. Interleaved
+partitioning assigns every nth bit to the same partition. In both strategies,
+each partition is stored as a single copy at one participating node and normal
+verification checks the owning partition without rebuilding the complete filter.
 """
 import base64
 import time
@@ -30,10 +30,39 @@ def _set_bit(bits: bytearray, position: int) -> None:
     bits[position >> 3] |= 1 << (position & 7)
 
 
-def _pack_range(bits: bytes | bytearray, start: int, length: int) -> bytes:
+STRATEGY_NAMES = {
+    "sequential": "Sequential Bit Partitioning",
+    "interleaved": "Interleaved Bit Partitioning",
+}
+
+
+def _partition_layout(
+    m: int,
+    partition_count: int,
+    index: int,
+    strategy: str,
+) -> tuple[int, int, int]:
+    """Return ``(first global bit, local length, global step)`` for a partition."""
+    if strategy == "sequential":
+        base, remainder = divmod(m, partition_count)
+        start = index * base + min(index, remainder)
+        length = base + (1 if index < remainder else 0)
+        return start, length, 1
+    if strategy == "interleaved":
+        length = (m - index + partition_count - 1) // partition_count
+        return index, length, partition_count
+    raise PartitionError(f"unsupported partitioning strategy {strategy!r}")
+
+
+def _pack_partition(
+    bits: bytes | bytearray,
+    start: int,
+    length: int,
+    step: int,
+) -> bytes:
     packed = bytearray((length + 7) // 8)
     for local_position in range(length):
-        if _bit_is_set(bits, start + local_position):
+        if _bit_is_set(bits, start + local_position * step):
             _set_bit(packed, local_position)
     return bytes(packed)
 
@@ -43,12 +72,13 @@ def partition_filter(
     partition_count: int,
     nodes: Sequence[str] = NODES,
     record_id: int | str | None = None,
+    *,
+    strategy: str = "sequential",
 ) -> list[dict]:
-    """Split ``bloom`` into balanced contiguous bit ranges.
+    """Split ``bloom`` using the selected horizontal strategy.
 
-    Partition sizes differ by at most one bit when ``m`` is not exactly
-    divisible by ``partition_count``. Assignments repeat round-robin if an
-    experiment uses more partitions than nodes.
+    Partition sizes differ by at most one bit. Node assignments repeat
+    round-robin if an experiment uses more partitions than nodes.
     """
     if not isinstance(partition_count, int) or isinstance(partition_count, bool):
         raise PartitionError("partition_count must be an integer")
@@ -60,27 +90,30 @@ def partition_filter(
         raise PartitionError("at least one named node is required")
     if len(set(nodes)) != len(nodes):
         raise PartitionError("node names must be unique")
+    if strategy not in STRATEGY_NAMES:
+        raise PartitionError(f"unsupported partitioning strategy {strategy!r}")
 
-    base, remainder = divmod(bloom.m, partition_count)
-    partitions, start = [], 0
+    partitions = []
     for index in range(partition_count):
-        bit_length = base + (1 if index < remainder else 0)
-        packed = _pack_range(bloom.bits, start, bit_length)
+        start, bit_length, step = _partition_layout(
+            bloom.m, partition_count, index, strategy
+        )
+        packed = _pack_partition(bloom.bits, start, bit_length, step)
         partitions.append({
             "record_id": record_id,
             "partition_index": index,
             "partition_count": partition_count,
-            "strategy": "sequential",
+            "strategy": strategy,
             "placement": "single_copy",
             "replication_factor": 1,
             "nodes": [nodes[index % len(nodes)]],
             "start_bit": start,
             "bit_length": bit_length,
+            "position_step": step,
             "m": bloom.m,
             "k": bloom.k,
             "bits": base64.b64encode(packed).decode(),
         })
-        start += bit_length
     return partitions
 
 
@@ -90,6 +123,8 @@ def partition_anchor(
     partition_count: int,
     nodes: Sequence[str] = NODES,
     record_id: int | str | None = None,
+    *,
+    strategy: str = "sequential",
 ) -> list[dict]:
     """Create partitions from a serialized Bloom-filter anchor."""
     try:
@@ -97,7 +132,9 @@ def partition_anchor(
         bloom = BloomFilter.from_b64(m, k, key, encoded)
     except (KeyError, TypeError, ValueError) as exc:
         raise PartitionError("invalid Bloom-filter anchor") from exc
-    return partition_filter(bloom, partition_count, nodes, record_id)
+    return partition_filter(
+        bloom, partition_count, nodes, record_id, strategy=strategy
+    )
 
 
 def _validated_partitions(
@@ -132,6 +169,7 @@ def _validated_partitions(
             index = row["partition_index"]
             start = row["start_bit"]
             length = row["bit_length"]
+            step = row.get("position_step", 1)
             assigned_nodes = row["nodes"]
         except (KeyError, TypeError, ValueError) as exc:
             raise PartitionError("partition data is invalid") from exc
@@ -142,7 +180,7 @@ def _validated_partitions(
             expected_count, m, k, record_id, strategy, placement, replication_factor,
         ):
             raise PartitionError("partition metadata does not describe one Bloom filter")
-        if strategy != "sequential":
+        if strategy not in STRATEGY_NAMES:
             raise PartitionError("unsupported partitioning strategy")
         if not isinstance(replication_factor, int) or replication_factor < 1:
             raise PartitionError("replication_factor must be a positive integer")
@@ -153,7 +191,12 @@ def _validated_partitions(
             or any(not isinstance(node, str) or not node for node in assigned_nodes)
         ):
             raise PartitionError("partition node assignments are invalid")
-        if not isinstance(index, int) or not isinstance(start, int) or not isinstance(length, int):
+        if (
+            not isinstance(index, int)
+            or not isinstance(start, int)
+            or not isinstance(length, int)
+            or not isinstance(step, int)
+        ):
             raise PartitionError("partition positions must be integers")
         if not 0 <= index < expected_count:
             raise PartitionError("partition index is outside the configured range")
@@ -162,11 +205,11 @@ def _validated_partitions(
         if length % 8 and raw[-1] >> (length % 8):
             raise PartitionError("partition contains bits outside its declared range")
 
-        base, remainder = divmod(m, expected_count)
-        expected_start = index * base + min(index, remainder)
-        expected_length = base + (1 if index < remainder else 0)
-        if start != expected_start or length != expected_length:
-            raise PartitionError("partition bit range does not match its index")
+        expected_start, expected_length, expected_step = _partition_layout(
+            m, expected_count, index, strategy
+        )
+        if (start, length, step) != (expected_start, expected_length, expected_step):
+            raise PartitionError("partition bit layout does not match its index and strategy")
         decoded.append((row, raw))
 
     decoded.sort(key=lambda item: item[0]["partition_index"])
@@ -277,9 +320,10 @@ def reconstruct_filter(partitions: Iterable[dict], key: bytes) -> BloomFilter:
     first = decoded[0][0]
     complete = bytearray(first["m"] // 8)
     for row, raw in decoded:
+        step = row.get("position_step", 1)
         for local_position in range(row["bit_length"]):
             if _bit_is_set(raw, local_position):
-                _set_bit(complete, row["start_bit"] + local_position)
+                _set_bit(complete, row["start_bit"] + local_position * step)
     return BloomFilter(first["m"], first["k"], key, bytes(complete))
 
 
@@ -294,18 +338,20 @@ def verify_items_detailed(partitions: Iterable[dict], key: bytes, items: Iterabl
     first = decoded[0][0]
     position_filter = BloomFilter(first["m"], first["k"], key)
     expected_count = first["partition_count"]
-    base, remainder = divmod(first["m"], expected_count)
+    strategy = first["strategy"]
     available = {row["partition_index"]: (row, raw) for row, raw in decoded}
     contributions = []
     for index in range(expected_count):
-        start = index * base + min(index, remainder)
-        length = base + (1 if index < remainder else 0)
+        start, length, step = _partition_layout(
+            first["m"], expected_count, index, strategy
+        )
         available_row = available.get(index)
         contributions.append({
             "partition": index + 1,
             "nodes": list(available_row[0]["nodes"]) if available_row else [],
             "start_bit": start,
-            "end_bit": start + length - 1,
+            "end_bit": start + (length - 1) * step,
+            "position_step": step,
             "available": available_row is not None,
             "required_positions": 0,
             "checked_positions": 0,
@@ -317,10 +363,13 @@ def verify_items_detailed(partitions: Iterable[dict], key: bytes, items: Iterabl
     materialized_items = list(items)
     for item in materialized_items:
         for position in position_filter.positions(item):
-            index = min(position // base, expected_count - 1) if remainder == 0 else next(
-                i for i, contribution in enumerate(contributions)
-                if contribution["start_bit"] <= position <= contribution["end_bit"]
-            )
+            if strategy == "interleaved":
+                index = position % expected_count
+            else:
+                index = next(
+                    i for i, contribution in enumerate(contributions)
+                    if contribution["start_bit"] <= position <= contribution["end_bit"]
+                )
             contribution = contributions[index]
             contribution["required_positions"] += 1
             available_row = available.get(index)
@@ -329,7 +378,10 @@ def verify_items_detailed(partitions: Iterable[dict], key: bytes, items: Iterabl
                 continue
             row, raw = available_row
             contribution["checked_positions"] += 1
-            if _bit_is_set(raw, position - row["start_bit"]):
+            local_position = (
+                position - row["start_bit"]
+            ) // row.get("position_step", 1)
+            if _bit_is_set(raw, local_position):
                 contribution["matched_positions"] += 1
             else:
                 contribution["mismatched_positions"] += 1
@@ -389,11 +441,22 @@ def verify_items(partitions: Iterable[dict], key: bytes, items: Iterable[str]) -
     return result["verified"]
 
 
-def run_sequential_partitioning() -> dict:
-    """Evaluate Sequential Bit Partitioning in temporary per-node stores."""
+def _run_partitioning(
+    strategy: str,
+    attack: str | None = None,
+    options: dict | None = None,
+) -> dict:
+    """Evaluate one horizontal strategy and an optional integrated attack."""
+    if strategy not in STRATEGY_NAMES:
+        raise PartitionError(f"unsupported partitioning strategy {strategy!r}")
+    if attack is not None and not isinstance(attack, str):
+        raise PartitionError("attack must be a string")
+    if options is not None and not isinstance(options, dict):
+        raise PartitionError("defence options must be an object")
     app = systems()["bloom"]
     ledger = app.config["ledger"]
     anchor_impl = app.config["anchor"]
+    anchors = ledger.anchors()
     partition_count = len(NODES)
     store = PartitionedBloomStore(NODES)
     rows = []
@@ -403,21 +466,39 @@ def run_sequential_partitioning() -> dict:
     partition_seconds = 0.0
     verification_seconds = 0.0
 
-    for block_id, anchor in ledger.anchors().items():
+    for block_id, anchor in anchors.items():
         if not {"m", "k", "bits"} <= anchor.keys():
             continue
         started = time.perf_counter()
-        partitions = partition_anchor(anchor, anchor_impl.key, partition_count, NODES, block_id)
+        partitions = partition_anchor(
+            anchor,
+            anchor_impl.key,
+            partition_count,
+            NODES,
+            block_id,
+            strategy=strategy,
+        )
         store.add(partitions)
         partition_seconds += time.perf_counter() - started
         if not assignments:
-            assignments = [{
-                "partition": p["partition_index"] + 1,
-                "start_bit": p["start_bit"],
-                "end_bit": p["start_bit"] + p["bit_length"] - 1,
-                "bit_length": p["bit_length"],
-                "nodes": p["nodes"],
-            } for p in partitions]
+            assignments = []
+            for partition in partitions:
+                start = partition["start_bit"]
+                length = partition["bit_length"]
+                step = partition.get("position_step", 1)
+                end = start + (length - 1) * step
+                assignments.append({
+                    "partition": partition["partition_index"] + 1,
+                    "start_bit": start,
+                    "end_bit": end,
+                    "position_step": step,
+                    "position_rule": (
+                        f"{start}-{end}" if step == 1
+                        else f"{start}, {start + step}, ... {end}"
+                    ),
+                    "bit_length": length,
+                    "nodes": partition["nodes"],
+                })
         tx = ledger.record(block_id)
         if tx is None:
             continue
@@ -543,11 +624,41 @@ def run_sequential_partitioning() -> dict:
         "baseline_records_compared": len(rows),
         "baseline_agreement": bool(rows) and all(row["matches_baseline"] for row in rows),
     }
+    attack_support = None
+    if attack is not None:
+        attack_support = {
+            "status": "ready_for_attacker_component",
+            "requested_attack": attack,
+            "attack_executed": False,
+            "baseline": {
+                "representation": "complete_bloom_filter",
+                "visibility_percentage": 100.0,
+                "records": len(rows),
+            },
+            "partition_views": [{
+                "node": assignment["nodes"][0],
+                "partition": assignment["partition"],
+                "visible_bits": assignment["bit_length"],
+                "visibility_percentage": round(
+                    assignment["bit_length"] * 100 / anchor_impl.M, 2
+                ),
+                "position_rule": assignment["position_rule"],
+            } for assignment in assignments],
+            "interface": (
+                "The defence prepares per-node partition views. The attacker component "
+                "must consume the selected view and return its own attack measurements."
+            ),
+        }
     return {
         "check": "inference",
         "defense": "horizontal_partitioning",
         "system": "bloom",
-        "strategy": "sequential",
+        "strategy": strategy,
+        "strategy_name": STRATEGY_NAMES[strategy],
+        "attack": attack,
+        "attack_supported": attack_support is not None,
+        "attack_executed": False,
+        "attack_support": attack_support,
         "placement": "single_copy",
         "replication_factor": 1,
         "partition_count": partition_count,
@@ -570,13 +681,29 @@ def run_sequential_partitioning() -> dict:
         "max_node_exposure_percent": round(largest_partition * 100 / anchor_impl.M, 2),
         "rows": rows,
         "conclusion": (
-            "The Horizontal Partitioning defence used Sequential Bit Partitioning to split "
-            "each complete Bloom-filter anchor into "
-            f"{partition_count} balanced contiguous ranges with one copy per node. "
+            f"The Horizontal Partitioning defence used {STRATEGY_NAMES[strategy]} to "
+            "distribute each complete Bloom-filter anchor across "
+            f"{partition_count} balanced partitions with one copy per node. "
             "Partition-aware verification matched the complete-filter baseline without giving "
             "one node the entire bit array."
         ),
     }
+
+
+def run_sequential_partitioning(
+    attack: str | None = None,
+    options: dict | None = None,
+) -> dict:
+    """Evaluate balanced contiguous Sequential Bit Partitioning."""
+    return _run_partitioning("sequential", attack, options)
+
+
+def run_interleaved_partitioning(
+    attack: str | None = None,
+    options: dict | None = None,
+) -> dict:
+    """Evaluate round-robin Interleaved Bit Partitioning."""
+    return _run_partitioning("interleaved", attack, options)
 
 
 # Backward-compatible name for code written before the strategy was named SBP.
