@@ -28,6 +28,7 @@ import random
 
 from ...anchors import record_items
 from ..common import field_item, systems
+from .measures import attach_view_measures, measures, timer
 from .views import check_views, full_mask, row
 
 CLASSES = {
@@ -213,11 +214,17 @@ def run_experiment(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS,
     m = impl.M
 
     experiments = []
+    chance = 1 / len(labels)
     for n in partitions:
         start, end = fragment_bounds(m, n, position)
         length = end - start
-        results, metrics = attack_view(
-            references, targets, lambda bits, s=start, e=end: observe(bits, s, e), length)
+        with timer() as elapsed:
+            results, metrics = attack_view(
+                references, targets, lambda bits, s=start, e=end: observe(bits, s, e), length)
+        # Risk reduction is measured against the first (largest-visibility) configuration.
+        baseline_asr = experiments[0]["accuracy"] if experiments else None
+        security = measures(metrics["accuracy"], chance, baseline_asr, elapsed(),
+                            macro_f1=metrics["macro_f1"])
 
         # Evaluation-side diagnostic (uses the key, never given to the attacker): how many of
         # each programme's k Bloom bits fall inside the observed fragment. A class with 0 bits
@@ -235,6 +242,7 @@ def run_experiment(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS,
             "visibility_ratio": round(length / m, 4),
             "programme_bits_in_fragment": signal,
             **metrics,
+            "security": security,
             "sample_results": [{
                 "target_id": r["target_id"],
                 "scores": {k: round(v, 3) for k, v in r["scores"].items()},
@@ -259,8 +267,10 @@ def run_experiment(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS,
             "aggregation": "mean per class",
             "seed": seed,
         },
-        "chance_accuracy": round(1 / len(labels), 4),
+        "chance_accuracy": round(chance, 4),
         "experiments": experiments,
+        # Headline: the least-protected configuration (the full filter when E1 is run).
+        "security": dict(experiments[0]["security"]) if experiments else None,
     }
 
 
@@ -286,7 +296,7 @@ def run_on_views(views, seed: int = SEED, per_class: int = RECORDS_PER_CLASS) ->
     baseline = measure("Complete Bloom filter (no defence)", [], full_mask(m))
     rows = [measure(v["node"], [v["node"]], v["mask"]) for v in views]
     worst = max(rows, key=lambda r: r["success_rate"])
-    return {
+    result = {
         "attack": "reference_similarity",
         "metric": "Programme inference accuracy",
         "chance": round(chance, 4),
@@ -299,6 +309,11 @@ def run_on_views(views, seed: int = SEED, per_class: int = RECORDS_PER_CLASS) ->
             f"{worst['success_rate']:.0%}, against {chance:.0%} for a random guess."
         ),
     }
+    attach_view_measures(result, chance)
+    for r in [baseline, *rows]:
+        r["security"]["macro_f1"] = r["macro_f1"]
+    result["security"]["macro_f1"] = worst["macro_f1"]
+    return result
 
 
 def run_inference_reference_similarity() -> dict:

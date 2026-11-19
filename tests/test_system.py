@@ -700,3 +700,63 @@ def test_reference_similarity_endpoint(site):
     assert data["system"] == "bloom" and data["attack"] == "reference_similarity"
     assert [e["experiment"] for e in data["experiments"]] == ["E1", "E2", "E3", "E4", "E5"]
     assert data["config"]["records"] == 300
+
+
+# Inference security measures --------------------------------------------------------
+
+from certchain.attacks.inference import measures as sec  # noqa: E402
+
+
+def test_security_measure_formulas():
+    s = sec.measures(0.6, chance=1 / 3, baseline_asr=0.8)
+    assert s["asr"] == 0.6
+    assert s["advantage"] == round((0.6 - 1 / 3) / (2 / 3), 4) == 0.4
+    assert s["security_level"] == 0.6
+    assert s["risk_reduction"] == 0.25
+    # Below chance is no advantage; no baseline success leaves risk reduction undefined.
+    assert sec.measures(0.2, chance=1 / 3)["advantage"] == 0.0
+    assert sec.measures(0.0, baseline_asr=0.0)["risk_reduction"] is None
+    with pytest.raises(ValueError):
+        sec.advantage(0.5, chance=1.0)
+
+
+@pytest.mark.parametrize("attack", ["collusion", "pattern_mining", "reference_similarity"])
+def test_every_inference_attack_reports_security_measures(site, attack):
+    s = site.test_client().post(f"/api/security/{attack}").get_json()["security"]
+    assert {"asr", "chance", "advantage", "security_level", "risk_reduction", "attack_ms"} <= s.keys()
+    assert 0 <= s["asr"] <= 1 and 0 <= s["advantage"] <= 1
+    assert s["security_level"] == round(1 - s["advantage"], 4)
+
+
+def test_attack_specific_measures(site):
+    client = site.test_client()
+    collusion = client.post("/api/security/collusion").get_json()
+    assert collusion["security"]["collusion_threshold"] == 2
+    assert collusion["security"]["asr"] == round(collusion["blocks_exposed"] / collusion["total_blocks"], 4)
+    mining = client.post("/api/security/pattern_mining").get_json()["security"]
+    assert mining["k_anonymity"] >= 2 and 0 < mining["link_precision"] <= 1
+    reference = client.post("/api/security/reference_similarity").get_json()
+    first = reference["experiments"][0]["security"]
+    assert first["risk_reduction"] is None and first["macro_f1"] == reference["experiments"][0]["macro_f1"]
+    assert all(e["security"]["risk_reduction"] is not None for e in reference["experiments"][1:])
+
+
+def test_defence_views_report_risk_reduction(site):
+    seq = _defend(site, "sequential", "collusion")
+    # The headline ignores the all-node coalition, which defeats every defence.
+    assert seq["security"]["worst_attacker"] != "3 colluding"
+    # Sequential coalitions below all nodes see 2/3 of the bits, so they need at least the
+    # key threshold, and confirm no more than the full filter (the exact count depends on
+    # where the random key puts each guess's positions).
+    assert seq["security"]["collusion_threshold"] in (2, 3)
+    base = seq["baseline"]["success_rate"]
+    assert seq["security"]["risk_reduction"] == round((base - seq["security"]["asr"]) / base, 4)
+    assert 0 <= seq["security"]["risk_reduction"] <= 1
+    # Pairwise: two nodes pool every partition, so the defence gives no reduction.
+    pair = _defend(site, "pairwise", "collusion")
+    assert pair["security"]["collusion_threshold"] == 2 and pair["security"]["risk_reduction"] == 0.0
+    for attack in ("pattern_mining", "reference_similarity"):
+        result = _defend(site, "sequential", attack)
+        assert result["baseline"]["security"]["risk_reduction"] is None
+        assert all(row["security"]["risk_reduction"] is not None or result["baseline"]["success_rate"] == 0
+                   for row in result["rows"])

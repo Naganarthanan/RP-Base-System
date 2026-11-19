@@ -11,6 +11,7 @@ from itertools import combinations
 
 from ..common import NODES, field_item, systems
 from .data import PROGRAMME_GUESSES
+from .measures import asr, attach_view_measures, measures, timer
 from .views import check_views, filter_int, full_mask, positions_mask, row
 
 # Fields a colluder's dictionary targets, by the transaction types that carry them.
@@ -88,7 +89,9 @@ def run_on_views(views) -> dict:
         rows.append(max(results, key=lambda r: (r["success_rate"], r["visible_bits"])))
 
     at_threshold = rows[threshold - 1]
-    return {
+    for size, r in enumerate(rows, start=1):
+        r["colluding"] = size
+    result = {
         "attack": "collusion",
         "metric": "Blocks whose programme is confirmed (worst-case coalition)",
         "threshold": threshold,
@@ -103,26 +106,40 @@ def run_on_views(views) -> dict:
             f"confirmed when all {impl.K} of its positions fall inside the pooled partitions."
         ),
     }
+    attach_view_measures(result)
+    # Every defence falls when all organisations collude, so the headline is the worst
+    # coalition smaller than all nodes (as the manipulation side's detection rate does).
+    partial = rows[:-1] or rows
+    worst = max(partial, key=lambda r: (r["success_rate"], r["visible_bits"]))
+    result["security"] = {**worst["security"], "worst_attacker": worst["label"],
+                          "collusion_threshold": _collusion_threshold(rows, "blocks_confirmed")}
+    return result
+
+
+def _collusion_threshold(rows, key="blocks_exposed"):
+    """Fewest colluding organisations that expose at least one block (None if none do)."""
+    return next((r["colluding"] for r in rows if r[key] > 0), None)
 
 
 def run_inference_collusion() -> dict:
-    app = systems()["bloom"]
-    impl = app.config["anchor"]
-    anchors = app.config["ledger"].anchors()
-    total = sum(1 for a in anchors.values() if "bits" in a)
+    with timer() as elapsed:
+        app = systems()["bloom"]
+        impl = app.config["anchor"]
+        anchors = app.config["ledger"].anchors()
+        total = sum(1 for a in anchors.values() if "bits" in a)
 
-    # With the key, run the dictionary over every block and count those exposed.
-    exposed = 0
-    for a in anchors.values():
-        if "bits" not in a:
-            continue
-        bloom = impl.new_filter(a["bits"])
-        hit = any(field_item(tx_type, field, guess) in bloom
-                  for field, types in COLLUSION_TARGETS.items()
-                  for tx_type in types
-                  for guess in PROGRAMME_GUESSES)
-        if hit:
-            exposed += 1
+        # With the key, run the dictionary over every block and count those exposed.
+        exposed = 0
+        for a in anchors.values():
+            if "bits" not in a:
+                continue
+            bloom = impl.new_filter(a["bits"])
+            hit = any(field_item(tx_type, field, guess) in bloom
+                      for field, types in COLLUSION_TARGETS.items()
+                      for tx_type in types
+                      for guess in PROGRAMME_GUESSES)
+            if hit:
+                exposed += 1
 
     nodes = len(NODES)
     threshold = nodes // 2 + 1
@@ -131,6 +148,13 @@ def run_inference_collusion() -> dict:
         "key_reconstructed": c >= threshold,
         "blocks_exposed": exposed if c >= threshold else 0,
     } for c in range(1, nodes + 1)]
+    for m in matrix:
+        m["asr"] = round(asr(m["blocks_exposed"], total), 4)
+
+    # Without the key no guess can be tested, so a random guess confirms nothing: chance = 0.
+    security = measures(asr(exposed, total), attack_ms=elapsed(),
+                        collusion_threshold=_collusion_threshold(matrix),
+                        collusion_threshold_fraction=round(threshold / nodes, 4))
 
     return {
         "check": "inference",
@@ -141,6 +165,7 @@ def run_inference_collusion() -> dict:
         "total_blocks": total,
         "blocks_exposed": exposed,
         "matrix": matrix,
+        "security": security,
         "scenario": f"The {nodes} organisations that run the Bloom filter chain pool their key shares.",
         "conclusion": (
             f"One organisation on its own cannot test any guess, so no block is exposed. Once "

@@ -8,7 +8,9 @@ records that share a value - a structural inference leak that needs no key at al
 The attacker only reads the stored filters (public on the chain) and counts shared bits;
 nothing here uses the secret key or recovers an actual value.
 """
+from ...anchors import record_items
 from ..common import systems
+from .measures import asr, measures, timer
 from .views import check_views, filter_int, full_mask, row
 
 # Extra shared bits, beyond what chance predicts, that flag two records as linked.
@@ -50,7 +52,7 @@ def mine(filters: list[tuple[int, int]], m: int, mask: int | None = None) -> dic
     def union(a, b):
         parent[find(a)] = find(b)
 
-    links = 0
+    pairs = []
     for i in range(total):
         idx_i, bi, si = blocks[i]
         for j in range(i + 1, total):
@@ -59,7 +61,8 @@ def mine(filters: list[tuple[int, int]], m: int, mask: int | None = None) -> dic
             expected = si * sj / m
             if overlap - expected >= LINK_MARGIN:
                 union(idx_i, idx_j)
-                links += 1
+                pairs.append((idx_i, idx_j))
+    links = len(pairs)
 
     groups: dict = {}
     for idx, _, _ in blocks:
@@ -69,8 +72,41 @@ def mine(filters: list[tuple[int, int]], m: int, mask: int | None = None) -> dic
         "total_blocks": total,
         "linkable_blocks": sum(len(g) for g in clusters),
         "links_found": links,
+        "pairs": pairs,
         "clusters": clusters,
     }
+
+
+def _field_values() -> dict:
+    """Evaluation-only ground truth: block index -> set of its field items (off-chain record)."""
+    ledger = systems()["bloom"].config["ledger"]
+    truth = {}
+    for idx in ledger.anchors():
+        tx = ledger.record(idx)
+        if tx is not None:
+            truth[idx] = {item for item in record_items(tx) if not item.startswith("tx=")}
+    return truth
+
+
+def mining_measures(found: dict, truth: dict, baseline_asr: float | None = None,
+                    attack_ms: float | None = None) -> dict:
+    """Core measures plus link precision and k-anonymity for one mining result.
+
+    Link precision: share of linked pairs whose records really share a field value
+    (checked against the off-chain records, which the attacker never sees).
+    k-anonymity: size of the smallest linked group; a small group singles records out.
+    """
+    pairs = found["pairs"]
+    checked = [(a, b) for a, b in pairs if a in truth and b in truth]
+    correct = sum(bool(truth[a] & truth[b]) for a, b in checked)
+    sizes = [len(g) for g in found["clusters"]]
+    return measures(
+        asr(found["linkable_blocks"], found["total_blocks"]),
+        baseline_asr=baseline_asr, attack_ms=attack_ms,
+        link_precision=round(correct / len(checked), 4) if checked else None,
+        k_anonymity=min(sizes) if sizes else None,
+        mean_group_size=round(sum(sizes) / len(sizes), 2) if sizes else None,
+    )
 
 
 def run_on_views(views) -> dict:
@@ -81,24 +117,28 @@ def run_on_views(views) -> dict:
     """
     m, filters = _chain_filters()
     views = check_views(views, m)
+    truth = _field_values()
 
-    def measure(label, nodes, mask):
-        found = mine(filters, m, mask)
+    def measure(label, nodes, mask, baseline_asr=None):
+        with timer() as elapsed:
+            found = mine(filters, m, mask)
         total, linkable = found["total_blocks"], found["linkable_blocks"]
-        return row(label, nodes, mask, m, linkable / total if total else 0.0,
+        return row(label, nodes, mask, m, asr(linkable, total),
                    f"{linkable} of {total} blocks linkable in {len(found['clusters'])} group(s), "
                    f"{found['links_found']} links",
                    linkable_blocks=linkable, links_found=found["links_found"],
-                   clusters=len(found["clusters"]))
+                   clusters=len(found["clusters"]),
+                   security=mining_measures(found, truth, baseline_asr, elapsed()))
 
     baseline = measure("Complete Bloom filter (no defence)", [], full_mask(m))
-    rows = [measure(v["node"], [v["node"]], v["mask"]) for v in views]
+    rows = [measure(v["node"], [v["node"]], v["mask"], baseline["success_rate"]) for v in views]
     worst = max(rows, key=lambda r: r["success_rate"])
     return {
         "attack": "pattern_mining",
         "metric": "Blocks linkable by shared bits",
         "baseline": baseline,
         "rows": rows,
+        "security": {**worst["security"], "worst_attacker": worst["label"]},
         "conclusion": (
             f"With complete filters {baseline['linkable_blocks']} blocks are linkable without the key. "
             f"Under this partitioning the strongest single node ({worst['label']}, "
@@ -108,8 +148,10 @@ def run_on_views(views) -> dict:
 
 
 def run_inference_pattern_mining() -> dict:
-    m, filters = _chain_filters()
-    found = mine(filters, m)
+    with timer() as elapsed:
+        m, filters = _chain_filters()
+        found = mine(filters, m)
+    security = mining_measures(found, _field_values(), attack_ms=elapsed())
     total, linkable, links = found["total_blocks"], found["linkable_blocks"], found["links_found"]
     clusters = found["clusters"]
 
@@ -130,6 +172,7 @@ def run_inference_pattern_mining() -> dict:
         "clusters": len(clusters),
         "largest_cluster": len(clusters[0]) if clusters else 0,
         "rows": rows,
+        "security": security,
         "scenario": "An attacker with only the public chain mines the Bloom filters for records that share a value.",
         "conclusion": (
             f"The keyed Bloom filters hide the values, but records that share a field set the same "
