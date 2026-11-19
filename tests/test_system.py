@@ -518,8 +518,10 @@ def test_pairwise_partitioning_defence_endpoint(site):
     ("sequential", "collusion"),
     ("interleaved", "pattern_mining"),
     ("pairwise", "collusion"),
+    ("sequential", "reference_similarity"),
+    ("pairwise", "pattern_mining"),
 ])
-def test_horizontal_partitioning_prepares_attack_support_without_execution(
+def test_horizontal_partitioning_executes_attack_on_node_views(
     site, defense, attack,
 ):
     response = site.test_client().post("/api/security/defend", json={
@@ -536,9 +538,17 @@ def test_horizontal_partitioning_prepares_attack_support_without_execution(
     support = result["attack_support"]
     assert result["strategy"] == defense
     assert result["attack"] == attack and result["attack_supported"] is True
-    assert result["attack_executed"] is False
-    assert support["status"] == "ready_for_attacker_component"
-    assert support["requested_attack"] == attack and support["attack_executed"] is False
+    assert result["attack_executed"] is True
+    assert support["status"] == "executed"
+    assert support["requested_attack"] == attack and support["attack_executed"] is True
+    outcome = support["result"]
+    assert outcome["attack"] == attack
+    assert outcome["baseline"]["visibility_percentage"] == 100
+    assert len(outcome["rows"]) == 3
+    assert all(0 <= row["success_rate"] <= 1 for row in [outcome["baseline"], *outcome["rows"]])
+    if attack != "collusion":  # collusion rows are coalitions; the others are one row per node
+        views = {row["node"]: row["visibility_percentage"] for row in support["partition_views"]}
+        assert {row["label"]: row["visibility_percentage"] for row in outcome["rows"]} == views
     assert support["baseline"]["visibility_percentage"] == 100
     assert support["baseline"]["records"] == result["blocks_partitioned"]
     assert len(support["partition_views"]) == 3
@@ -549,6 +559,62 @@ def test_horizontal_partitioning_prepares_attack_support_without_execution(
     assert all(expected_minimum_visibility < row["visibility_percentage"]
                < expected_minimum_visibility + 1
                for row in support["partition_views"])
+
+
+def test_unknown_attack_is_reported_as_not_executed(site):
+    data = site.test_client().post("/api/security/defend", json={
+        "check": "inference", "attack": "dictionary", "defenses": ["sequential"],
+    }).get_json()
+    result = data["results"][0]
+    assert result["attack_executed"] is False and result["attack_supported"] is False
+    assert result["attack_support"]["status"] == "unsupported_attack"
+    assert result["attack_support"]["result"] is None
+
+
+def _defend(site, defense, attack):
+    return site.test_client().post("/api/security/defend", json={
+        "check": "inference", "attack": attack, "defenses": [defense],
+    }).get_json()["results"][0]["attack_support"]["result"]
+
+
+def test_collusion_on_views_needs_the_key_and_the_bits(site):
+    sequential = _defend(site, "sequential", "collusion")
+    pairwise = _defend(site, "pairwise", "collusion")
+    by_size = lambda r: {row["label"]: row for row in r["rows"]}  # noqa: E731
+    seq, pair = by_size(sequential), by_size(pairwise)
+    # One node never holds the key, whatever it can see.
+    assert seq["1 colluding"]["blocks_confirmed"] == 0 and pair["1 colluding"]["blocks_confirmed"] == 0
+    assert seq["1 colluding"]["key_reconstructed"] is False
+    # Pairwise: two nodes pool every partition, so they confirm as much as the full filter.
+    assert pair["2 colluding"]["visibility_percentage"] == 100
+    assert pair["2 colluding"]["blocks_confirmed"] == pairwise["baseline"]["blocks_confirmed"] > 0
+    # Sequential: two nodes hold the key but only two thirds of the bits, so they confirm less.
+    assert seq["2 colluding"]["key_reconstructed"] is True
+    assert seq["2 colluding"]["blocks_confirmed"] <= sequential["baseline"]["blocks_confirmed"]
+    assert seq["3 colluding"]["blocks_confirmed"] == sequential["baseline"]["blocks_confirmed"]
+
+
+def test_view_attacks_match_their_full_filter_runs(site):
+    # The no-defence baseline of each view runner must equal the attack's own full-filter run.
+    client = site.test_client()
+    mining = client.post("/api/security/pattern_mining").get_json()
+    assert _defend(site, "sequential", "pattern_mining")["baseline"]["linkable_blocks"] == mining["linkable_blocks"]
+    collusion = client.post("/api/security/collusion").get_json()
+    assert _defend(site, "sequential", "collusion")["baseline"]["blocks_confirmed"] == collusion["blocks_exposed"]
+    reference = client.post("/api/security/reference_similarity").get_json()
+    assert (_defend(site, "sequential", "reference_similarity")["baseline"]["accuracy"]
+            == reference["experiments"][0]["accuracy"])
+
+
+def test_view_masks_must_be_valid():
+    from certchain.attacks.inference.views import check_views
+    with pytest.raises(ValueError):
+        check_views([], 16)
+    with pytest.raises(ValueError):
+        check_views([{"node": "A", "mask": 0}], 16)
+    with pytest.raises(ValueError):
+        check_views([{"node": "A", "mask": 1 << 16}], 16)
+    assert check_views([{"node": "A", "mask": 0b101}], 16) == [{"node": "A", "mask": 0b101}]
 
 
 # ---- concurrency and headers ----------------------------------------------

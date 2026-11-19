@@ -7,13 +7,102 @@ collude they recover the key and can test guesses against every block. The resul
 blast radius: how many blocks become exposed at each collusion size. Touches only the
 Bloom filter system's inference attack, nothing else.
 """
+from itertools import combinations
+
 from ..common import NODES, field_item, systems
 from .data import PROGRAMME_GUESSES
+from .views import check_views, filter_int, full_mask, positions_mask, row
 
 # Fields a colluder's dictionary targets, by the transaction types that carry them.
 COLLUSION_TARGETS = {
     "programme": ("student.upsert", "certificate.issue"),
 }
+
+
+def _guess_masks(impl) -> list[int]:
+    """The Bloom positions of every dictionary guess, as masks (computed with the key)."""
+    probe = impl.new_filter()
+    return [positions_mask(probe.positions(field_item(tx_type, field, guess)))
+            for field, types in COLLUSION_TARGETS.items()
+            for tx_type in types
+            for guess in PROGRAMME_GUESSES]
+
+
+def _exposure(blocks: list[int], guesses: list[int], mask: int) -> tuple[int, int]:
+    """(confirmed, candidate) blocks for a coalition that holds the key but sees only `mask`.
+
+    Confirmed: every position of some guess is visible and set, the same test the full
+    filter allows. Candidate: every *visible* position of some guess is set, but part of it
+    is hidden, so the guess cannot be confirmed (a weaker, false-positive-prone signal).
+    """
+    confirmed = candidate = 0
+    for bits in blocks:
+        full = partial = False
+        for g in guesses:
+            seen = g & mask
+            if not seen or bits & seen != seen:
+                continue
+            if seen == g:
+                full = True
+                break
+            partial = True
+        confirmed += full
+        candidate += full or partial
+    return confirmed, candidate
+
+
+def run_on_views(views) -> dict:
+    """Collusion against defence-supplied node views (see views.py).
+
+    For every coalition size the worst-case coalition is used: the one whose pooled views
+    expose the most blocks. Below the key threshold no guess can be tested at all.
+    """
+    app = systems()["bloom"]
+    impl = app.config["anchor"]
+    m = impl.M
+    views = check_views(views, m)
+    blocks = [filter_int(impl.new_filter(a["bits"]))
+              for a in app.config["ledger"].anchors().values() if "bits" in a]
+    total = len(blocks)
+    guesses = _guess_masks(impl)
+    threshold = len(views) // 2 + 1
+
+    def measure(label, nodes, mask, has_key):
+        confirmed, candidate = _exposure(blocks, guesses, mask) if has_key else (0, 0)
+        detail = (f"{confirmed} of {total} blocks confirmed, {candidate} candidates"
+                  if has_key else "Bloom key not reconstructed; no guess can be tested")
+        return row(label, nodes, mask, m, confirmed / total if total else 0.0, detail,
+                   key_reconstructed=has_key, blocks_confirmed=confirmed, blocks_candidate=candidate)
+
+    baseline = measure(f"{threshold} colluding, complete filter (no defence)", [], full_mask(m), True)
+    rows = []
+    for size in range(1, len(views) + 1):
+        options = []
+        for group in combinations(views, size):
+            mask = 0
+            for v in group:
+                mask |= v["mask"]
+            options.append(([v["node"] for v in group], mask))
+        has_key = size >= threshold
+        results = [measure(f"{size} colluding", nodes, mask, has_key) for nodes, mask in options]
+        rows.append(max(results, key=lambda r: (r["success_rate"], r["visible_bits"])))
+
+    at_threshold = rows[threshold - 1]
+    return {
+        "attack": "collusion",
+        "metric": "Blocks whose programme is confirmed (worst-case coalition)",
+        "threshold": threshold,
+        "total_blocks": total,
+        "baseline": baseline,
+        "rows": rows,
+        "conclusion": (
+            f"With complete filters, {threshold} colluding organisations confirm the programme in "
+            f"{baseline['blocks_confirmed']} of {total} blocks. Under this partitioning the worst "
+            f"{threshold}-node coalition sees {at_threshold['visibility_percentage']}% of each "
+            f"filter and confirms {at_threshold['blocks_confirmed']} of {total}; a guess is only "
+            f"confirmed when all {impl.K} of its positions fall inside the pooled partitions."
+        ),
+    }
 
 
 def run_inference_collusion() -> dict:
