@@ -382,11 +382,29 @@ function defenseReport(r, c) {
       const viewRows = r.attack_support.partition_views.map((x) => `<tr>
         <td>${esc(x.node)}</td><td>${x.partitions.map((p) => `P${p}`).join(", ")}</td><td class="num">${x.visible_bits}</td>
         <td class="num">${percentage(x.visibility_percentage)}</td><td class="num">${esc(x.position_rule)}</td></tr>`).join("");
-      attackSupport = `<div class="card stack"><div class="row spread"><h3>Attack support interface</h3>
-          <span class="badge warn">Execution pending</span></div>
-        <p class="small muted">Selected attack: <strong>${esc(selectedAttack)}</strong>. The defence prepared the complete-filter baseline and controlled per-node views, but it did not execute attack logic.</p>
+      const res = r.attack_support.result;
+      let attackResult = "";
+      if (res) {
+        // Success at or above the no-defence baseline is a red flag; any reduction is amber; zero is green.
+        const rate = (x) => `<span class="badge ${x === 0 ? "ok" : x >= res.baseline.success_rate ? "bad" : "warn"}">${pct(x)}</span>`;
+        const resultRow = (x, base) => `<tr${base ? ` class="muted"` : ""}>
+          <td>${esc(x.label)}${x.nodes.length && x.label !== x.nodes.join(", ") ? `<br><span class="small muted">${esc(x.nodes.join(", "))}</span>` : ""}</td>
+          <td class="num">${percentage(x.visibility_percentage)}</td><td class="num">${rate(x.success_rate)}</td>
+          <td class="small">${esc(x.detail)}</td></tr>`;
+        attackResult = `<h4>${esc(res.metric)}</h4>
+          <div class="table-wrap"><table><thead><tr><th>Attacker</th><th class="num">Visibility</th><th class="num">Attack success</th><th>Detail</th></tr></thead>
+          <tbody>${resultRow(res.baseline, true)}${res.rows.map((x) => resultRow(x, false)).join("")}</tbody></table></div>
+          ${res.chance != null ? `<p class="small muted">Random-guess accuracy: ${pct(res.chance)}.</p>` : ""}
+          <p><strong>Attack result.</strong> ${esc(res.conclusion)}</p>`;
+      }
+      const executed = r.attack_support.attack_executed;
+      attackSupport = `<div class="card stack"><div class="row spread"><h3>Attack against partition views</h3>
+          <span class="badge ${executed ? "ok" : "warn"}">${executed ? "Attack executed" : "Not supported"}</span></div>
+        <p class="small muted">Selected attack: <strong>${esc(selectedAttack)}</strong>. ${executed
+          ? "Each node's attacker ran on only the Bloom positions its partitions hold, and is compared with the complete-filter baseline."
+          : "This attack has no partition-view runner, so it was not executed."}</p>
         <div class="table-wrap"><table><thead><tr><th>Node view</th><th>Partition</th><th class="num">Visible bits</th><th class="num">Visibility</th><th class="num">Positions</th></tr></thead>
-        <tbody>${viewRows}</tbody></table></div><p class="small muted">${esc(r.attack_support.interface)}</p></div>`;
+        <tbody>${viewRows}</tbody></table></div>${attackResult}</div>`;
     }
     const passed = r.all_verified && r.all_reconstructed;
     const placementLabel = r.placement === "pairwise_replication" ? "pairwise-replicated placement" : "single-copy placement";
@@ -418,7 +436,7 @@ function defenseReport(r, c) {
         <div class="table-wrap"><table><thead><tr><th>Offline node</th><th class="num">Local match</th><th class="num">Position coverage</th><th class="num">Bloom coverage</th><th class="num">Verified records</th><th class="num">Inconclusive records</th><th>Status</th></tr></thead>
         <tbody>${availability}</tbody></table></div></div>
       <div class="card stack"><p><strong>Conclusion.</strong> ${esc(r.conclusion)}</p>
-        <p class="small muted">This read-only experiment distributes partitions into temporary per-node stores. The live ledger is not modified, and the selected attack is not executed against these stores.</p></div>`;
+        <p class="small muted">This read-only experiment distributes partitions into temporary per-node stores. The live ledger is not modified${r.attack_executed ? "; the selected attack ran against each node's partition view" : ""}.</p></div>`;
   }
   if (r.defense !== "vertical") {
     return `<div class="card stack"><h3>${esc(r.defense_name || r.defense)}</h3><p>${esc(r.conclusion || "")}</p>
