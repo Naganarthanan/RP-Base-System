@@ -353,6 +353,102 @@ function picklist(kind, items) {
 const pct = (x) => `${(x * 100).toFixed(1).replace(/\.0$/, "")}%`;
 const asrBadge = (x) => `<span class="badge ${x >= 0.5 ? "bad" : x > 0 ? "warn" : "ok"}">${pct(x)}</span>`;
 
+// Inference security measures (certchain/attacks/inference/measures.py).
+// Every key the backend puts in a `security` block is shown; known keys get a name,
+// formula, meaning and a good/bad tone, unknown ones are listed as they come.
+const MEASURES = {
+  asr: { name: "Attack success rate (ASR)", kind: "pct", formula: "successes ÷ attempts",
+    meaning: "Share of targets or blocks the attack succeeded on.",
+    tone: (v) => (v === 0 ? "ok" : v >= 0.5 ? "bad" : "warn") },
+  chance: { name: "Random-guess success", kind: "pct", formula: "1 ÷ number of possible answers",
+    meaning: "What an attacker gets by guessing blindly; the floor for any real leak." },
+  advantage: { name: "Attacker advantage", kind: "pct", formula: "(ASR − chance) ÷ (1 − chance)",
+    meaning: "How much better than a blind guess the attacker does. 0% means no leak.",
+    tone: (v) => (v === 0 ? "ok" : v >= 0.5 ? "bad" : "warn") },
+  security_level: { name: "Security level", kind: "pct", formula: "1 − advantage",
+    meaning: "100% means the attacker learns nothing beyond guessing; 0% means a full leak.",
+    tone: (v) => (v >= 0.9 ? "ok" : v >= 0.5 ? "warn" : "bad") },
+  risk_reduction: { name: "Risk reduction", kind: "pct", formula: "(baseline ASR − ASR) ÷ baseline ASR",
+    meaning: "How much the defence (or smaller fragment) cut the attack's success. Shown only when there is a baseline to compare with.",
+    tone: (v) => (v >= 0.5 ? "ok" : v > 0 ? "warn" : "bad") },
+  attack_ms: { name: "Attack time", kind: "ms", formula: "wall-clock time of the attack",
+    meaning: "Attacker cost in computation time." },
+  collusion_threshold: { name: "Collusion threshold", kind: "int", formula: "fewest colluding organisations that expose a block",
+    meaning: "How many organisations must collude before anything leaks. Higher is safer; none means no coalition leaked.",
+    tone: (v) => (v <= 1 ? "bad" : "warn") },
+  collusion_threshold_fraction: { name: "Threshold as share of nodes", kind: "pct", formula: "key threshold ÷ nodes",
+    meaning: "Fraction of all organisations needed to rebuild the Bloom key." },
+  link_precision: { name: "Link precision", kind: "pct", formula: "true links ÷ links found",
+    meaning: "Share of linked record pairs that really share a field value (checked against off-chain records the attacker never sees). High precision makes the leak trustworthy for the attacker." },
+  k_anonymity: { name: "k-anonymity", kind: "int", formula: "size of the smallest linked group",
+    meaning: "A record can be narrowed to a group of k. Below 5 singles people out; higher is safer.",
+    tone: (v) => (v == null ? "ok" : v < 5 ? "bad" : "warn") },
+  mean_group_size: { name: "Mean linked-group size", kind: "num", formula: "linked blocks ÷ linked groups",
+    meaning: "Average size of the groups the attacker can form." },
+  macro_f1: { name: "Macro F1", kind: "f1", formula: "mean over classes of 2·P·R ÷ (P + R)",
+    meaning: "Balanced classification quality across all programmes; 1.00 is perfect inference.",
+    tone: (v) => (v >= 0.8 ? "bad" : v >= 0.5 ? "warn" : "ok") },
+};
+const MEASURE_ORDER = Object.keys(MEASURES);
+const HIDDEN_MEASURES = new Set(["worst_attacker"]);
+
+function measureValue(key, v) {
+  if (v == null) return "N/A";
+  const kind = (MEASURES[key] || {}).kind;
+  if (kind === "pct") return pct(v);
+  if (kind === "ms") return `${v} ms`;
+  if (kind === "f1") return Number(v).toFixed(2);
+  return typeof v === "number" || typeof v === "string" ? String(v) : JSON.stringify(v);
+}
+
+function measureKeys(...blocks) {
+  const present = new Set(blocks.filter(Boolean).flatMap((b) => Object.keys(b)));
+  const known = MEASURE_ORDER.filter((k) => present.has(k));
+  const extra = [...present].filter((k) => !MEASURES[k] && !HIDDEN_MEASURES.has(k)).sort();
+  return [...known, ...extra];
+}
+
+function measureBadge(key, v, withName = true) {
+  const def = MEASURES[key] || {};
+  const tone = v != null && def.tone ? def.tone(v) : "";
+  const label = withName ? `${def.name || key} ${measureValue(key, v)}` : measureValue(key, v);
+  return `<span class="badge ${tone}" title="${esc(def.formula || key)}">${esc(label)}</span>`;
+}
+
+// `s` is the headline security block; `rows` (optional) are per-attacker rows that each
+// carry their own `security` block, shown as a breakdown table when expanded.
+function securityMeasures(s, title = "Security measures", rows = null) {
+  if (!s) return "";
+  const keys = measureKeys(s);
+  const headline = ["asr", "advantage", "security_level", "risk_reduction"].filter((k) => k in s && s[k] != null);
+  const table = keys.map((k) => {
+    const def = MEASURES[k] || {};
+    return `<tr><td><strong>${esc(def.name || k)}</strong></td>
+      <td class="num">${measureBadge(k, s[k], false)}</td>
+      <td class="small mono">${esc(def.formula || "")}</td><td class="small">${esc(def.meaning || "")}</td></tr>`;
+  }).join("");
+  let breakdown = "";
+  const withSecurity = (rows || []).filter((r) => r && r.security);
+  if (withSecurity.length) {
+    const cols = measureKeys(...withSecurity.map((r) => r.security));
+    breakdown = `<h4>Per attacker</h4>
+      <div class="table-wrap"><table><thead><tr><th>Attacker</th><th class="num">Visibility</th>${cols.map((k) => `<th class="num">${esc((MEASURES[k] || {}).name || k)}</th>`).join("")}</tr></thead>
+      <tbody>${withSecurity.map((r) => `<tr><td>${esc(r.label)}${r.nodes && r.nodes.length && r.label !== r.nodes.join(", ") ? `<br><span class="small muted">${esc(r.nodes.join(", "))}</span>` : ""}</td>
+        <td class="num">${r.visibility_percentage != null ? `${r.visibility_percentage}%` : ""}</td>
+        ${cols.map((k) => `<td class="num">${k === "risk_reduction" && r.security[k] == null ? "baseline" : esc(measureValue(k, r.security[k]))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  }
+  return `<details class="card measures"><summary>
+      <span class="measures-head"><strong>${esc(title)}</strong>
+        ${s.worst_attacker ? `<span class="small muted">Worst case: ${esc(s.worst_attacker)}</span>` : ""}</span>
+      <span class="row">${headline.map((k) => measureBadge(k, s[k])).join("")}
+        <span class="small muted expand-hint">${keys.length} measures — click to expand</span></span></summary>
+    <div class="stack measures-body">
+      <div class="table-wrap"><table><thead><tr><th>Measure</th><th class="num">Value</th><th>Formula</th><th>What it means</th></tr></thead>
+        <tbody>${table}</tbody></table></div>
+      ${breakdown}
+    </div></details>`;
+}
+
 // Report for one defence run (vertical partitioning has a dedicated layout).
 function defenseReport(r, c) {
   if (r.defense === "horizontal_partitioning") {
@@ -390,9 +486,11 @@ function defenseReport(r, c) {
         const resultRow = (x, base) => `<tr${base ? ` class="muted"` : ""}>
           <td>${esc(x.label)}${x.nodes.length && x.label !== x.nodes.join(", ") ? `<br><span class="small muted">${esc(x.nodes.join(", "))}</span>` : ""}</td>
           <td class="num">${percentage(x.visibility_percentage)}</td><td class="num">${rate(x.success_rate)}</td>
+          <td class="num">${x.security ? pct(x.security.security_level) : ""}</td>
+          <td class="num">${!x.security ? "" : x.security.risk_reduction == null ? (base ? "baseline" : "N/A") : pct(x.security.risk_reduction)}</td>
           <td class="small">${esc(x.detail)}</td></tr>`;
         attackResult = `<h4>${esc(res.metric)}</h4>
-          <div class="table-wrap"><table><thead><tr><th>Attacker</th><th class="num">Visibility</th><th class="num">Attack success</th><th>Detail</th></tr></thead>
+          <div class="table-wrap"><table><thead><tr><th>Attacker</th><th class="num">Visibility</th><th class="num">ASR</th><th class="num">Security level</th><th class="num">Risk reduction</th><th>Detail</th></tr></thead>
           <tbody>${resultRow(res.baseline, true)}${res.rows.map((x) => resultRow(x, false)).join("")}</tbody></table></div>
           ${res.chance != null ? `<p class="small muted">Random-guess accuracy: ${pct(res.chance)}.</p>` : ""}
           <p><strong>Attack result.</strong> ${esc(res.conclusion)}</p>`;
@@ -404,7 +502,8 @@ function defenseReport(r, c) {
           ? "Each node's attacker ran on only the Bloom positions its partitions hold, and is compared with the complete-filter baseline."
           : "This attack has no partition-view runner, so it was not executed."}</p>
         <div class="table-wrap"><table><thead><tr><th>Node view</th><th>Partition</th><th class="num">Visible bits</th><th class="num">Visibility</th><th class="num">Positions</th></tr></thead>
-        <tbody>${viewRows}</tbody></table></div>${attackResult}</div>`;
+        <tbody>${viewRows}</tbody></table></div>${attackResult}</div>
+        ${res ? securityMeasures(res.security, `Security measures · ${selectedAttack} under ${r.strategy_name}`, [res.baseline, ...res.rows]) : ""}`;
     }
     const passed = r.all_verified && r.all_reconstructed;
     const placementLabel = r.placement === "pairwise_replication" ? "pairwise-replicated placement" : "single-copy placement";
@@ -677,6 +776,7 @@ function renderSecurity() {
         out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Collusion attack · ${esc(c.targetLabel)}</h3><span class="badge bad">${data.blocks_exposed} of ${data.total_blocks} blocks exposed</span></div>
           <p class="small muted">${esc(data.scenario)} The key is reconstructed once ${data.threshold} of ${data.nodes} organisations collude.</p>
           <div class="table-wrap"><table><thead><tr><th>Colluding organisations</th><th>Bloom key</th><th class="num">Blocks exposed</th></tr></thead><tbody>${matrix}</tbody></table></div></div>
+          ${securityMeasures(data.security)}
           <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
         out.scrollIntoView({ behavior: "smooth", block: "nearest" });
       } catch (err) {
@@ -701,6 +801,7 @@ function renderSecurity() {
         out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Attack pattern mining · ${esc(c.targetLabel)}</h3><span class="badge bad">${data.linkable_blocks} of ${data.total_blocks} blocks linkable</span></div>
           <p class="small muted">${esc(data.scenario)} ${data.clusters} linkable group(s) found from filter similarity alone — no key used.</p>
           <div class="table-wrap"><table><thead><tr><th>Linked group</th><th class="num">Records</th><th>Block numbers</th></tr></thead><tbody>${groups}</tbody></table></div></div>
+          ${securityMeasures(data.security)}
           <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
         out.scrollIntoView({ behavior: "smooth", block: "nearest" });
       } catch (err) {
@@ -727,6 +828,9 @@ function renderSecurity() {
             <td class="num">${e.macro_precision.toFixed(3)}</td>
             <td class="num">${e.macro_recall.toFixed(3)}</td>
             <td class="num">${e.macro_f1.toFixed(3)}</td>
+            <td class="num">${pct(e.security.advantage)}</td>
+            <td class="num">${pct(e.security.security_level)}</td>
+            <td class="num">${e.security.risk_reduction == null ? "baseline" : pct(e.security.risk_reduction)}</td>
             <td><span class="mono small">${labels.map((l) => `${l}:${e.programme_bits_in_fragment[l]}`).join(" ")}</span></td></tr>`).join("");
         const details = data.experiments.map((e) => {
           const cm = labels.map((a) => `<tr><th>${esc(a)}</th>${labels.map((p) => `<td class="num">${e.confusion[a][p]}</td>`).join("")}</tr>`).join("");
@@ -736,7 +840,7 @@ function renderSecurity() {
               <td>${esc(r.predicted)}</td><td>${esc(r.ground_truth)}</td>
               <td>${r.correct ? `<span class="badge bad">Inferred</span>` : `<span class="badge ok">Missed</span>`}</td></tr>`).join("");
           return `<details class="card"><summary><strong>${esc(e.experiment)} · ${esc(e.configuration)}</strong> — attacker sees ${esc(e.fragment)}, bits ${e.fragment_bits[0]}–${e.fragment_bits[1] - 1}</summary>
-            <div class="stack" style="margin-top:8px">
+            <div class="stack measures-body">
               <div class="table-wrap"><table><thead><tr><th>Actual ↓ / Predicted →</th>${labels.map((l) => `<th class="num">${esc(l)}</th>`).join("")}</tr></thead><tbody>${cm}</tbody></table></div>
               <div class="table-wrap"><table><thead><tr><th>Class</th><th class="num">Precision</th><th class="num">Recall</th><th class="num">F1</th></tr></thead><tbody>${pc}</tbody></table></div>
               <div class="table-wrap"><table><thead><tr><th>Target</th><th>Class scores (mean Hamming similarity %)</th><th>Predicted</th><th>Ground truth</th><th>Result</th></tr></thead><tbody>${samples}</tbody></table></div>
@@ -746,8 +850,11 @@ function renderSecurity() {
         out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Reference-assisted fragment inference · ${esc(c.targetLabel)}</h3><span class="badge">Chance: ${pct(data.chance_accuracy)}</span></div>
           <p class="small muted">${esc(data.scenario)}</p>
           <p class="small muted">${cfg.records} synthetic records (${cfg.reference_records} reference, ${cfg.target_records} target) · target attribute: ${esc(cfg.target_attribute)} · Bloom m=${cfg.bloom_m}, k=${cfg.bloom_k} · ${esc(cfg.similarity)} similarity, ${esc(cfg.aggregation)} · seed ${cfg.seed}</p>
-          <div class="table-wrap"><table><thead><tr><th>Configuration</th><th class="num">Visibility</th><th class="num">Bits seen</th><th class="num">Accuracy</th><th class="num">Precision</th><th class="num">Recall</th><th class="num">F1</th><th>Programme bits in fragment</th></tr></thead><tbody>${summary}</tbody></table></div>
-          <p class="small muted">Precision, recall and F1 are macro averages over the classes. "Programme bits in fragment" is an evaluation-only diagnostic: how many of each programme's Bloom bits fall in the observed fragment (the attacker never sees it).</p></div>
+          <div class="table-wrap"><table><thead><tr><th>Configuration</th><th class="num">Visibility</th><th class="num">Bits seen</th><th class="num">Accuracy</th><th class="num">Precision</th><th class="num">Recall</th><th class="num">F1</th><th class="num">Advantage</th><th class="num">Security level</th><th class="num">Risk reduction vs E1</th><th>Programme bits in fragment</th></tr></thead><tbody>${summary}</tbody></table></div>
+          <p class="small muted">Precision, recall and F1 are macro averages over the classes. Advantage = (accuracy − chance) / (1 − chance); security level = 1 − advantage. "Programme bits in fragment" is an evaluation-only diagnostic: how many of each programme's Bloom bits fall in the observed fragment (the attacker never sees it).</p></div>
+          ${securityMeasures(data.security, "Security measures (full filter)", data.experiments.map((e) => ({
+            label: `${e.experiment} · ${e.configuration}`, nodes: [],
+            visibility_percentage: Math.round(e.visibility_ratio * 10000) / 100, security: e.security })))}
           ${details}
           <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
         out.scrollIntoView({ behavior: "smooth", block: "nearest" });
