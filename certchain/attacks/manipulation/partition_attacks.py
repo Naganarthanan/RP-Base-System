@@ -43,12 +43,14 @@ try:
     from ...ledger import GENESIS_PREV, NODES, block_digest
     from ...anchors import canonical, HashAnchor
     from .collusion_attack import SAMPLE_CERTIFICATE, tamper_document
+    from .measures import advantage, asr, defense_effectiveness, measures, timer
 except (ImportError, ValueError):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from certchain.defenses.manipulation import partition as P
     from certchain.ledger import GENESIS_PREV, NODES, block_digest
     from certchain.anchors import canonical, HashAnchor
     from certchain.attacks.manipulation.collusion_attack import SAMPLE_CERTIFICATE, tamper_document
+    from certchain.attacks.manipulation.measures import advantage, asr, defense_effectiveness, measures, timer
 
 
 def _build_forged_anchor(base_doc: dict | None = None, category: str = "content") -> tuple[str, dict]:
@@ -106,35 +108,47 @@ class SequenceRewriteCollusion:
             num_blocks: Number of blocks in mock chain.
             head_pin: Whether the defense enables head hash pinning.
         """
-        if chain is None:
-            strategy = P.SingleSequence()
-            chain = P.PartitionedChain(P.synthetic_chain(num_blocks), n, strategy, head_pin=head_pin)
-        else:
-            chain = chain.clone()
+        with timer() as elapsed:
+            if chain is None:
+                strategy = P.SingleSequence()
+                chain = P.PartitionedChain(P.synthetic_chain(num_blocks), n, strategy, head_pin=head_pin)
+            else:
+                chain = chain.clone()
 
-        n = chain.n
-        N = chain.height
-        target_block = max(0, min(target_block, N - 1))
+            n = chain.n
+            N = chain.height
+            target_block = max(0, min(target_block, N - 1))
 
-        # Default colluders: coalition that includes the holder of target_block and its sequence
-        if colluders is None:
-            # Default to a 2-node coalition out of n
-            target_holder = chain.holders(target_block)[0]
-            colluders = {target_holder, (target_holder + 1) % n}
+            # Default colluders: coalition that includes the holder of target_block and its sequence
+            if colluders is None:
+                # Default to a 2-node coalition out of n
+                target_holder = chain.holders(target_block)[0]
+                colluders = {target_holder, (target_holder + 1) % n}
 
-        forged_anchor, diffs = _build_forged_anchor(category=category)
-        
-        # Apply the coordinated sequence rewrite through the colluders
-        rewrite_res = P.apply_collusion(chain, colluders, target_block, forged_anchor)
-        
-        # Run defense verification pipeline (Algorithm 1 hash-chain cross-reference)
-        verification = chain.verify()
-        is_valid = verification["status"] == "Blockchain Valid"
-        attack_success = is_valid and rewrite_res["blocks_rewritten"] > 0
+            forged_anchor, diffs = _build_forged_anchor(category=category)
+            
+            # Apply the coordinated sequence rewrite through the colluders
+            rewrite_res = P.apply_collusion(chain, colluders, target_block, forged_anchor)
+            
+            # Run defense verification pipeline (Algorithm 1 hash-chain cross-reference)
+            verification = chain.verify()
+            is_valid = verification["status"] == "Blockchain Valid"
+            attack_success = is_valid and rewrite_res["blocks_rewritten"] > 0
 
-        result = "Success" if attack_success else "Failure"
-        asr = 1.0 if attack_success else 0.0
-        de = 0.0 if attack_success else 1.0
+            result = "Success" if attack_success else "Failure"
+            asr = 1.0 if attack_success else 0.0
+            de = 0.0 if attack_success else 1.0
+
+        # Collusion threshold: distinct nodes along the sequence suffix to the chain head
+        seq_threshold = min(n, max(1, N - target_block))
+        security = measures(
+            success_rate=asr,
+            chance=0.0,
+            baseline_asr=1.0,
+            attack_ms=elapsed(),
+            collusion_threshold=seq_threshold,
+            total_nodes=n,
+        )
 
         colluder_names = [chain.names[i] for i in sorted(colluders)]
         log_msg = _format_eval_log(
@@ -149,6 +163,7 @@ class SequenceRewriteCollusion:
             "result": result,
             "asr": asr,
             "defense_effectiveness": de,
+            "security": security,
             "target_block": target_block,
             "colluders": list(sorted(colluders)),
             "colluder_names": colluder_names,
@@ -200,38 +215,50 @@ class OddNodeHijack:
             num_blocks: Number of blocks in mock chain.
             head_pin: Whether the defense enables head hash pinning.
         """
-        if chain is None:
-            strategy = P.SingleOdd()
-            chain = P.PartitionedChain(P.synthetic_chain(num_blocks), n, strategy, head_pin=head_pin)
-        else:
-            chain = chain.clone()
+        with timer() as elapsed:
+            if chain is None:
+                strategy = P.SingleOdd()
+                chain = P.PartitionedChain(P.synthetic_chain(num_blocks), n, strategy, head_pin=head_pin)
+            else:
+                chain = chain.clone()
 
-        N = chain.height
-        
-        # Identify all odd-numbered blocks and their assigned nodes
-        odd_blocks = [i for i in range(N) if i % 2 == 1]
-        nodes_holding_odd = {chain.holders(i)[0] for i in odd_blocks}
-        
-        # Default to compromising all nodes that store odd blocks
-        colluders = odd_colluders if odd_colluders is not None else nodes_holding_odd
-        
-        # Default target block is an odd-numbered block held by the odd coalition
-        if target_block is None or target_block % 2 == 0:
-            target_block = odd_blocks[0] if odd_blocks else 1
+            n = chain.n
+            N = chain.height
+            
+            # Identify all odd-numbered blocks and their assigned nodes
+            odd_blocks = [i for i in range(N) if i % 2 == 1]
+            nodes_holding_odd = {chain.holders(i)[0] for i in odd_blocks}
+            
+            # Default to compromising all nodes that store odd blocks
+            colluders = odd_colluders if odd_colluders is not None else nodes_holding_odd
+            
+            # Default target block is an odd-numbered block held by the odd coalition
+            if target_block is None or target_block % 2 == 0:
+                target_block = odd_blocks[0] if odd_blocks else 1
 
-        forged_anchor, diffs = _build_forged_anchor(category=category)
-        
-        # Apply the hijack targeting the odd block
-        rewrite_res = P.apply_collusion(chain, colluders, target_block, forged_anchor)
-        
-        # Verify cross-references between odd nodes and even nodes
-        verification = chain.verify()
-        is_valid = verification["status"] == "Blockchain Valid"
-        attack_success = is_valid and rewrite_res["blocks_rewritten"] > 0
+            forged_anchor, diffs = _build_forged_anchor(category=category)
+            
+            # Apply the hijack targeting the odd block
+            rewrite_res = P.apply_collusion(chain, colluders, target_block, forged_anchor)
+            
+            # Verify cross-references between odd nodes and even nodes
+            verification = chain.verify()
+            is_valid = verification["status"] == "Blockchain Valid"
+            attack_success = is_valid and rewrite_res["blocks_rewritten"] > 0
 
-        result = "Success" if attack_success else "Failure"
-        asr = 1.0 if attack_success else 0.0
-        de = 0.0 if attack_success else 1.0
+            result = "Success" if attack_success else "Failure"
+            asr = 1.0 if attack_success else 0.0
+            de = 0.0 if attack_success else 1.0
+
+        odd_threshold = max(1, len(nodes_holding_odd))
+        security = measures(
+            success_rate=asr,
+            chance=0.0,
+            baseline_asr=1.0,
+            attack_ms=elapsed(),
+            collusion_threshold=odd_threshold,
+            total_nodes=n,
+        )
 
         colluder_names = [chain.names[i] for i in sorted(colluders)]
         log_msg = _format_eval_log(
@@ -246,6 +273,7 @@ class OddNodeHijack:
             "result": result,
             "asr": asr,
             "defense_effectiveness": de,
+            "security": security,
             "target_block": target_block,
             "odd_blocks_count": len(odd_blocks),
             "colluders": list(sorted(colluders)),
@@ -305,38 +333,51 @@ class KGroupTampering:
                   (tests boundary transition consistency).
             head_pin: Whether the defense enables head hash pinning.
         """
-        if chain is None:
-            strategy = P.KSequence(k=k)
-            chain = P.PartitionedChain(P.synthetic_chain(num_blocks), n, strategy, head_pin=head_pin)
-        else:
-            chain = chain.clone()
-
-        N = chain.height
-        target_block = max(0, min(target_block, N - 1))
-        group_holders = set(chain.holders(target_block))
-
-        # Configure coalition based on boundary testing mode
-        if colluders is None:
-            if boundary_mode == "partial_group":
-                # Compromise fewer than k nodes in the group (e.g., k - 1 nodes)
-                colluders = set(list(group_holders)[:max(1, k - 1)])
+        with timer() as elapsed:
+            if chain is None:
+                strategy = P.KSequence(k=k)
+                chain = P.PartitionedChain(P.synthetic_chain(num_blocks), n, strategy, head_pin=head_pin)
             else:
-                # Compromise all k nodes holding the boundary block
-                colluders = set(group_holders)
+                chain = chain.clone()
 
-        forged_anchor, diffs = _build_forged_anchor(category=category)
-        
-        # Apply the tampering on the k-group
-        rewrite_res = P.apply_collusion(chain, colluders, target_block, forged_anchor)
-        
-        # Verify cross-reference and replica consensus
-        verification = chain.verify()
-        is_valid = verification["status"] == "Blockchain Valid"
-        attack_success = is_valid and rewrite_res["blocks_rewritten"] > 0
+            n = chain.n
+            N = chain.height
+            target_block = max(0, min(target_block, N - 1))
+            group_holders = set(chain.holders(target_block))
 
-        result = "Success" if attack_success else "Failure"
-        asr = 1.0 if attack_success else 0.0
-        de = 0.0 if attack_success else 1.0
+            # Configure coalition based on boundary testing mode
+            if colluders is None:
+                if boundary_mode == "partial_group":
+                    # Compromise fewer than k nodes in the group (e.g., k - 1 nodes)
+                    colluders = set(list(group_holders)[:max(1, k - 1)])
+                else:
+                    # Compromise all k nodes holding the boundary block
+                    colluders = set(group_holders)
+
+            forged_anchor, diffs = _build_forged_anchor(category=category)
+            
+            # Apply the tampering on the k-group
+            rewrite_res = P.apply_collusion(chain, colluders, target_block, forged_anchor)
+            
+            # Verify cross-reference and replica consensus
+            verification = chain.verify()
+            is_valid = verification["status"] == "Blockchain Valid"
+            attack_success = is_valid and rewrite_res["blocks_rewritten"] > 0
+
+            result = "Success" if attack_success else "Failure"
+            asr = 1.0 if attack_success else 0.0
+            de = 0.0 if attack_success else 1.0
+
+        # Collusion threshold for k-sequence: must compromise all k replicas to tamper without replica mismatch
+        k_threshold = k
+        security = measures(
+            success_rate=asr,
+            chance=0.0,
+            baseline_asr=1.0,
+            attack_ms=elapsed(),
+            collusion_threshold=k_threshold,
+            total_nodes=n,
+        )
 
         defense_label = f"k-sequence (k={k})"
         colluder_names = [chain.names[i] for i in sorted(colluders)]
@@ -354,6 +395,7 @@ class KGroupTampering:
             "result": result,
             "asr": asr,
             "defense_effectiveness": de,
+            "security": security,
             "target_block": target_block,
             "group_holders": list(sorted(group_holders)),
             "colluders": list(sorted(colluders)),
@@ -463,6 +505,14 @@ def evaluate_partitioning_attacks(
 
         asr = success_count / trials
         de = failure_count / trials
+        c_thresh = 2 if "k-sequence" in def_name else (max(1, n // 2) if "odd" in def_name else n)
+        sec = measures(
+            success_rate=asr,
+            chance=0.0,
+            baseline_asr=1.0,
+            collusion_threshold=c_thresh,
+            total_nodes=n,
+        )
         results[strat_name] = {
             "defense": def_name,
             "trials": trials,
@@ -470,6 +520,7 @@ def evaluate_partitioning_attacks(
             "failures": failure_count,
             "asr": asr,
             "defense_effectiveness": de,
+            "security": sec,
             "detections": findings_summary,
         }
 
