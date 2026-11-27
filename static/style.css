@@ -53,6 +53,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .badge.bad { background: var(--danger-soft); color: var(--danger); }
 .badge.warn { background: var(--warn-soft); color: var(--warn); }
 
+/* Expandable security-measures card (inference attacks) */
+details.measures > summary { cursor: pointer; list-style: none; display: grid; gap: 8px; }
+details.measures > summary::-webkit-details-marker { display: none; }
+details.measures .measures-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+details.measures .measures-head strong::before { content: "▸"; display: inline-block; width: 1.1em; color: var(--muted); transition: transform .15s; }
+details.measures[open] .measures-head strong::before { transform: rotate(90deg); }
+details.measures > summary .row { gap: 6px; flex-wrap: wrap; align-items: center; }
+
 /* Layout */
 .shell { display: grid; grid-template-columns: 236px minmax(0, 1fr); min-height: 100vh; }
 .sidebar { background: var(--sidebar); color: var(--sidebar-ink); padding: 20px 12px; display: flex; flex-direction: column; gap: 22px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
@@ -253,3 +261,5 @@ dialog form { display: grid; gap: 12px; }
   .main { padding: 0; }
   .card { border: 0; padding: 0; box-shadow: none; }
 }
+.measures-body { margin-top: 10px; }
+details.measures[open] .expand-hint { display: none; }

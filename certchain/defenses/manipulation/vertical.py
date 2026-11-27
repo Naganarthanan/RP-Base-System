@@ -193,9 +193,20 @@ def run_vertical(attack: str = "collusion", options: dict | None = None,
     findings.append("The model R(r) = (c/n)^k assumes independent block placement. A rewrite cascades through "
                     "every later block, so the exact success rate is far lower than the model except at the tail.")
 
+    from certchain.attacks.manipulation.measures import measures
+    security = measures(
+        success_rate=at["asr"],
+        chance=0.0,
+        baseline_asr=at["baseline_asr"],
+        attack_ms=metrics["latency_ms"],
+        collusion_threshold=threshold,
+        total_nodes=n,
+    )
+
     return {
         "check": "manipulation", "layout": "partitioning", "defense": defense, "defense_name": name,
         "attack": "collusion",
+        "security": security,
         "config": {"strategy": opts["strategy"], "strategy_label": strategy.label, "nodes": n, "k": opts["k"],
                    "chain_blocks": N, "chain_source": source, "threshold": threshold, "model_k": MODEL_K,
                    "node_names": names},

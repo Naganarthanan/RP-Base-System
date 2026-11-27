@@ -40,11 +40,13 @@ if not logger.handlers:
 
 try:
     from ..common import NODES, BloomAnchor, HashAnchor, canonical, field_item, sha256, systems
+    from .measures import advantage, asr, defense_effectiveness, measures, timer
 except (ImportError, ValueError):
     # Standalone execution support
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from certchain.attacks.common import NODES, BloomAnchor, HashAnchor, canonical, field_item, sha256, systems
+    from certchain.attacks.manipulation.measures import advantage, asr, defense_effectiveness, measures, timer
 
 # Sample base document for manipulation experiments
 SAMPLE_CERTIFICATE = {
@@ -250,51 +252,64 @@ def run_manipulation_collusion() -> dict:
     
     Conforms to the exact schema expected by CertChain security checks
     (analogous to run_inference_collusion). Evaluates the blast radius and
-    Attack Success Rate (ASR) across increasing collusion sizes.
+    Attack Success Rate (ASR) across increasing collusion sizes, and attaches
+    standardized security metrics.
     """
-    total_nodes = len(NODES)
-    threshold = total_nodes // 2 + 1
+    with timer() as elapsed:
+        total_nodes = len(NODES)
+        threshold = total_nodes // 2 + 1
 
-    matrix = []
-    for c in range(1, total_nodes + 1):
-        res = simulate_single_collusion(
-            num_colluding=c,
-            tampering_category="content",
-            system_type="bloom",
-            total_nodes=total_nodes,
-            threshold=threshold,
-        )
-        matrix.append({
-            "colluding": c,
-            "key_reconstructed": res["key_reconstructed"],
-            "consensus_hijacked": res["consensus_hijacked"],
-            "verification_passed": res["verification_passed"],
-            "status": res["status"],
-            "asr": res["asr"],
-        })
+        matrix = []
+        for c in range(1, total_nodes + 1):
+            res = simulate_single_collusion(
+                num_colluding=c,
+                tampering_category="content",
+                system_type="bloom",
+                total_nodes=total_nodes,
+                threshold=threshold,
+            )
+            matrix.append({
+                "colluding": c,
+                "key_reconstructed": res["key_reconstructed"],
+                "consensus_hijacked": res["consensus_hijacked"],
+                "verification_passed": res["verification_passed"],
+                "status": res["status"],
+                "asr": res["asr"],
+            })
 
-    # Evaluate across both systems with threshold collusion (2 nodes)
-    rows = []
-    for sys_name in ("conventional", "bloom"):
-        res = simulate_single_collusion(
-            num_colluding=threshold,
-            tampering_category="content",
-            system_type=sys_name,
-            total_nodes=total_nodes,
-            threshold=threshold,
-        )
-        rows.append({
-            "system": sys_name,
-            "colluding_nodes": threshold,
-            "status": res["status"],
-            "forgery_accepted": res["verification_passed"],
-            "verdict": "vulnerable" if res["verification_passed"] else "resisted",
-            "detail": (
-                f"With {threshold} of {total_nodes} organisations colluding, the consensus "
-                f"threshold is reached. {'The secret Bloom key is reconstructed, allowing a ' if sys_name == 'bloom' else 'An unkeyed '}"
-                f"matching anchor to be committed to the majority chain, successfully bypassing the verification pipeline."
-            ),
-        })
+        # Evaluate across both systems with threshold collusion (2 nodes)
+        rows = []
+        for sys_name in ("conventional", "bloom"):
+            res = simulate_single_collusion(
+                num_colluding=threshold,
+                tampering_category="content",
+                system_type=sys_name,
+                total_nodes=total_nodes,
+                threshold=threshold,
+            )
+            rows.append({
+                "system": sys_name,
+                "colluding_nodes": threshold,
+                "status": res["status"],
+                "forgery_accepted": res["verification_passed"],
+                "verdict": "vulnerable" if res["verification_passed"] else "resisted",
+                "detail": (
+                    f"With {threshold} of {total_nodes} organisations colluding, the consensus "
+                    f"threshold is reached. {'The secret Bloom key is reconstructed, allowing a ' if sys_name == 'bloom' else 'An unkeyed '}"
+                    f"matching anchor to be committed to the majority chain, successfully bypassing the verification pipeline."
+                ),
+            })
+
+    # Core manipulation security measures
+    # At threshold (or above), the coalition reconstructs the key and hijacks consensus (ASR = 1.0)
+    security = measures(
+        success_rate=1.0,
+        chance=0.0,
+        baseline_asr=None,  # Baseline run without defense (displays N/A for risk reduction)
+        attack_ms=elapsed(),
+        collusion_threshold=threshold,
+        total_nodes=total_nodes,
+    )
 
     return {
         "check": "manipulation",
@@ -304,6 +319,7 @@ def run_manipulation_collusion() -> dict:
         "threshold": threshold,
         "matrix": matrix,
         "rows": rows,
+        "security": security,
         "scenario": (
             f"Multiple organisations running node infrastructure pool their cryptographic keys "
             f"and ledger write access to tamper with academic records."
@@ -393,6 +409,13 @@ def evaluate_asr(
         "failures": failure_count,
         "asr": asr,
         "summary": summary_log,
+        "security": measures(
+            success_rate=asr,
+            chance=0.0,
+            baseline_asr=None,
+            collusion_threshold=threshold,
+            total_nodes=total_nodes,
+        ),
     }
 
 

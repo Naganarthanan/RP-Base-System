@@ -1,14 +1,7 @@
-"""Defence strategies for the security check, split by side (scaffold).
+"""Defence strategies registered with the shared security-check dispatcher.
 
-    defenses/
-      common.py        shared helpers for both defence folders
-      inference/       inference defences     (one owner)
-      manipulation/    manipulation defences  (another owner)
-
-Each leaf package exposes a RUNNERS dict (defence id -> function). Add a module in your
-folder and register it in that folder's __init__.py; no file outside your folder changes,
-so the two defence owners never clash. Nothing is wired into the app yet — the attack
-side is live, the defence side is for the teams to fill in.
+The inference and manipulation components keep their implementations separate.
+Each leaf package exposes a ``RUNNERS`` mapping from defence id to runner.
 """
 from . import inference, manipulation
 
