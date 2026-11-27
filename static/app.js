@@ -612,7 +612,7 @@ function defenseReport(r, c) {
       <div class="card stack"><p><strong>Conclusion.</strong> ${esc(r.conclusion)}</p>
         <p class="small muted">This read-only experiment distributes partitions into temporary per-node stores. The live ledger is not modified${r.attack_executed ? "; the selected attack ran against each node's partition view" : ""}.</p></div>`;
   }
-  if (r.defense !== "vertical") {
+  if (r.layout !== "partitioning") {
     return `<div class="card stack"><h3>${esc(r.defense_name || r.defense)}</h3><p>${esc(r.conclusion || "")}</p>
       <pre class="mono small">${esc(JSON.stringify(r, null, 2))}</pre></div>`;
   }
