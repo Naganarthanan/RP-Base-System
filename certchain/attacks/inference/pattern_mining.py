@@ -9,6 +9,7 @@ The attacker only reads the stored filters (public on the chain) and counts shar
 nothing here uses the secret key or recovers an actual value.
 """
 import math
+import random
 
 from ...anchors import record_items
 from ..common import systems
@@ -157,6 +158,45 @@ def run_on_views(views) -> dict:
             f"With complete filters {baseline['linkable_blocks']} blocks are linkable without the key. "
             f"Under this partitioning the strongest single node ({worst['label']}, "
             f"{worst['visibility_percentage']}% of bits) links {worst['linkable_blocks']}."
+        ),
+    }
+
+
+def run_on_encoding(encoding, seed: int = 2026) -> dict:
+    """Pattern mining on the chain's records re-encoded by a defence (see views.py).
+
+    The baseline mines the filters stored on the chain; the defended row mines the same
+    records encoded the defence's way. Nothing is written to the chain.
+    """
+    m, filters = _chain_filters()
+    ledger = systems()["bloom"].config["ledger"]
+    truth = _field_values()
+    rng = random.Random(seed)
+    defended_filters = [(idx, encoding.encode(ledger.record(idx), idx, rng))
+                        for idx, _ in filters if ledger.record(idx) is not None]
+
+    def measure(label, chain_filters, baseline_asr=None):
+        with timer() as elapsed:
+            found = mine(chain_filters, m)
+        total, linkable = found["total_blocks"], found["linkable_blocks"]
+        return row(label, [], full_mask(m), m, asr(linkable, total),
+                   f"{linkable} of {total} blocks linkable in {len(found['clusters'])} group(s), "
+                   f"{found['links_found']} links",
+                   linkable_blocks=linkable, links_found=found["links_found"],
+                   clusters=len(found["clusters"]),
+                   security=mining_measures(found, truth, baseline_asr, elapsed()))
+
+    baseline = measure("Plain keyed encoding (no defence)", filters)
+    defended = measure("Defence encoding", defended_filters, baseline["success_rate"])
+    return {
+        "attack": "pattern_mining",
+        "metric": "Blocks linkable by shared bits",
+        "baseline": baseline,
+        "rows": [defended],
+        "security": {**defended["security"], "worst_attacker": defended["label"]},
+        "conclusion": (
+            f"With the plain encoding {baseline['linkable_blocks']} of {len(filters)} "
+            f"blocks are linkable without the key; under the defence encoding {defended['linkable_blocks']} are."
         ),
     }
 

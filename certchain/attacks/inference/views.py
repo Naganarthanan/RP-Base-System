@@ -7,6 +7,16 @@ its own logic on the visible bits only and returns rows in the shape built here,
 defence and the UI can show every attack the same way.
 
 Bit p of a filter int is Bloom position p (``int.from_bytes(bits, "little")``).
+
+A defence can instead change how records are encoded (for example per-record salting).
+It then hands the attack an *encoding* object with two methods:
+
+  encode(tx, record_id, rng) -> int     the record's full filter under the defence
+  positions(item, record_id) -> [int]   an item's keyed positions in that record's filter
+                                        (only usable by someone holding the key)
+
+and the attack's ``run_on_encoding(encoding)`` compares it with the plain encoding,
+returning the same baseline/rows shape as ``run_on_views``.
 """
 
 

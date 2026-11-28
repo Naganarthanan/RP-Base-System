@@ -25,5 +25,13 @@ VIEW_RUNNERS = {
     "reference_similarity": reference_similarity.run_on_views,
 }
 
+# Attacks a defence can run against its own encoding: id -> run_on_encoding(encoding).
+# The encoding object is described in views.py (used by per-record salting).
+ENCODING_RUNNERS = {
+    "collusion": collusion.run_on_encoding,
+    "pattern_mining": pattern_mining.run_on_encoding,
+    "reference_similarity": reference_similarity.run_on_encoding,
+}
+
 __all__ = ["run_inference", "run_inference_collusion", "run_inference_pattern_mining",
-           "run_inference_reference_similarity", "RUNNERS", "VIEW_RUNNERS"]
+           "run_inference_reference_similarity", "RUNNERS", "VIEW_RUNNERS", "ENCODING_RUNNERS"]

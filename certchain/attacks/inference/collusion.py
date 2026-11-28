@@ -7,6 +7,7 @@ collude they recover the key and can test guesses against every block. The resul
 blast radius: how many blocks become exposed at each collusion size. Touches only the
 Bloom filter system's inference attack, nothing else.
 """
+import random
 from itertools import combinations
 
 from ..common import NODES, field_item, systems
@@ -113,6 +114,71 @@ def run_on_views(views) -> dict:
     # coalition smaller than all nodes (as the manipulation side's detection rate does).
     partial = rows[:-1] or rows
     worst = max(partial, key=lambda r: (r["success_rate"], r["visible_bits"]))
+    result["security"] = {**worst["security"], "worst_attacker": worst["label"],
+                          "collusion_threshold": _collusion_threshold(rows, "blocks_confirmed")}
+    return result
+
+
+def run_on_encoding(encoding, seed: int = 2026) -> dict:
+    """Collusion against the chain's records re-encoded by a defence (see views.py).
+
+    Every node still sees the whole filter, so only the key matters: below the key
+    threshold no guess can be tested. A coalition that holds the key also holds each
+    record's salt (verification needs it), so it can recompute the salted positions of
+    every guess.
+    """
+    app = systems()["bloom"]
+    impl = app.config["anchor"]
+    ledger = app.config["ledger"]
+    m = impl.M
+    full = full_mask(m)
+    rng = random.Random(seed)
+    plain_guesses = _guess_masks(impl)
+    plain, defended = [], []
+    for idx, a in ledger.anchors().items():
+        tx = ledger.record(idx)
+        if "bits" not in a or tx is None:
+            continue
+        plain.append((filter_int(impl.new_filter(a["bits"])), plain_guesses))
+        defended.append((encoding.encode(tx, idx, rng), [
+            positions_mask(encoding.positions(field_item(tx_type, field, guess), idx))
+            for field, types in COLLUSION_TARGETS.items()
+            for tx_type in types
+            for guess in PROGRAMME_GUESSES]))
+    total = len(plain)
+    threshold = len(NODES) // 2 + 1
+
+    def measure(label, blocks, has_key):
+        with timer() as elapsed:
+            confirmed = sum(_exposure([bits], guesses, full)[0] for bits, guesses in blocks) if has_key else 0
+        detail = (f"{confirmed} of {total} blocks confirmed" if has_key
+                  else "Bloom key not reconstructed; no guess can be tested")
+        return row(label, [], full, m, confirmed / total if total else 0.0, detail,
+                   key_reconstructed=has_key, blocks_confirmed=confirmed, attack_ms=round(elapsed(), 1))
+
+    baseline = measure(f"{threshold} colluding, plain keyed encoding (no defence)", plain, True)
+    rows = []
+    for size in range(1, len(NODES) + 1):
+        r = measure(f"{size} colluding", defended, size >= threshold)
+        r["colluding"] = size
+        rows.append(r)
+    result = {
+        "attack": "collusion",
+        "metric": "Blocks whose programme is confirmed",
+        "threshold": threshold,
+        "total_blocks": total,
+        "baseline": baseline,
+        "rows": rows,
+        "conclusion": (
+            f"Salting does not hide anything from a coalition that holds the key: {threshold} colluding "
+            f"organisations confirm the programme in {rows[threshold - 1]['blocks_confirmed']} of {total} "
+            f"blocks, as they do without the defence ({baseline['blocks_confirmed']}). Collusion is countered "
+            f"by partitioning, not by salting."
+        ),
+    }
+    attach_view_measures(result)
+    partial = rows[:-1] or rows
+    worst = max(partial, key=lambda r: r["success_rate"])
     result["security"] = {**worst["security"], "worst_attacker": worst["label"],
                           "collusion_threshold": _collusion_threshold(rows, "blocks_confirmed")}
     return result

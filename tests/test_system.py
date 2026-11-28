@@ -647,6 +647,44 @@ def test_view_runs_report_attack_time(site, attack):
     assert result["security"]["attack_ms"] >= 0
 
 
+def _salted(site, attack):
+    return site.test_client().post("/api/security/defend", json={
+        "check": "inference", "attack": attack, "defenses": ["salted"],
+    }).get_json()["results"][0]
+
+
+def test_salted_hashing_keeps_verification_accurate(site):
+    data = _salted(site, "pattern_mining")
+    acc = data["verification_accuracy"]
+    assert data["defense"] == "salted_hashing" and data["attack_executed"] is True
+    assert acc["genuine_accepted"] == acc["genuine_records"] == data["records"] > 0
+    assert acc["tampered_rejected"] == acc["tampered_records"] > 0
+    assert acc["accuracy"] == 1 and acc["false_acceptance_rate"] == 0
+    assert data["metrics"]["storage_bytes_per_record"] == data["metrics"]["baseline_storage_bytes_per_record"] + 16
+
+
+def test_salted_hashing_stops_similarity_attacks(site):
+    mining = _salted(site, "pattern_mining")["attack_support"]["result"]
+    assert mining["baseline"]["success_rate"] > 0 and mining["rows"][0]["success_rate"] == 0
+    reference = _salted(site, "reference_similarity")["attack_support"]["result"]
+    assert reference["baseline"]["success_rate"] > 0.9
+    # Salted filters leave the attacker near a random guess (1 in 3).
+    assert reference["rows"][0]["success_rate"] < 0.45
+
+
+def test_salted_hashing_does_not_stop_a_key_holding_coalition(site):
+    result = _salted(site, "collusion")["attack_support"]["result"]
+    by_size = {row["colluding"]: row for row in result["rows"]}
+    assert by_size[1]["blocks_confirmed"] == 0  # no key, no test
+    assert by_size[2]["blocks_confirmed"] == result["baseline"]["blocks_confirmed"]
+    assert result["security"]["risk_reduction"] == 0.0
+
+
+def test_salted_hashing_reports_unsupported_attacks(site):
+    support = _salted(site, "rainbow")["attack_support"]
+    assert support["status"] == "unsupported_attack" and support["result"] is None
+
+
 def test_view_masks_must_be_valid():
     from certchain.attacks.inference.views import check_views
     with pytest.raises(ValueError):
