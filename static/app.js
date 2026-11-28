@@ -327,18 +327,21 @@ const SECURITY = {
       { id: "collusion", name: "Colluding-node dictionary attack", desc: "Organisations pool their key shares and partitions, then test guessed programmes against every block.", live: true },
       { id: "pattern_mining", name: "Pattern / frequency linkage attack", desc: "Link records that share a value by counting shared Bloom-filter bits, without the key.", live: true },
       { id: "reference_similarity", name: "Reference-assisted fragment inference", desc: "Infer a hidden programme from a full or 1/2–1/5 Bloom fragment using known records (300 synthetic records).", live: true },
+      { id: "adaptive", name: "Adaptive attacker (worst case)", desc: "For every coalition of nodes, pool what they hold, try all three techniques and keep the best.", live: true },
     ],
     // `counters`: the attacks each defence is designed against. Selecting an attack
     // enables only these defences; the rest stay disabled.
     defenses: [
       { id: "sequential", name: "Horizontal partitioning: sequential", desc: "Split each Bloom-filter bit array into balanced contiguous ranges and assign one range to each node.", live: true,
-        counters: ["collusion"] },
+        counters: ["collusion", "adaptive"] },
       { id: "interleaved", name: "Horizontal partitioning: interleaved", desc: "Distribute alternating Bloom-filter bit positions across nodes in round-robin order.", live: true,
-        counters: ["collusion"] },
+        counters: ["collusion", "adaptive"] },
       { id: "pairwise", name: "Horizontal partitioning: pairwise (availability)", desc: "Store each sequential partition on two nodes so verification survives one unavailable node. Two nodes then see the whole filter, so it is weaker against collusion.", live: true,
-        counters: ["collusion"] },
+        counters: ["collusion", "adaptive"] },
       { id: "salted", name: "Per-record salted hashing", desc: "Mix a random per-record salt into every keyed hash, so the same value sets different bits in different records.", live: true,
-        counters: ["pattern_mining", "reference_similarity"] },
+        counters: ["pattern_mining", "reference_similarity", "adaptive"] },
+      { id: "salted_partitioned", name: "Salted + partitioned (combined)", desc: "Salt every record, then split each filter across the nodes. Salting stops similarity attacks; partitioning stops a key-holding coalition.", live: true,
+        counters: ["collusion", "pattern_mining", "reference_similarity", "adaptive"] },
     ],
   },
 };
@@ -784,7 +787,8 @@ function renderSecurity() {
       </div>
       <div class="row spread">
         <span class="small muted" id="sec-summary">No defence selected — baseline run.</span>
-        <button class="btn primary" id="sec-run">Run ${esc(c.title.toLowerCase())} check</button>
+        <div class="row">${securityTab === "inference" ? `<button class="btn" id="sec-ablation">Compare all attacks × defences</button>` : ""}
+          <button class="btn primary" id="sec-run">Run ${esc(c.title.toLowerCase())} check</button></div>
       </div>
     </section>
     <section id="sec-out" class="stack" aria-live="polite"></section>
@@ -835,6 +839,26 @@ function renderSecurity() {
   root.querySelectorAll("[data-tab]").forEach((b) => {
     b.onclick = () => { securityTab = b.dataset.tab; renderSecurity(); };
   });
+
+  const ablationButton = root.querySelector("#sec-ablation");
+  if (ablationButton) ablationButton.onclick = async () => {
+    ablationButton.disabled = true;
+    const original = ablationButton.textContent;
+    ablationButton.textContent = "Running all combinations…";
+    try {
+      const data = await api("/api/security/ablation", "POST", {});
+      const tone = (v) => (v >= 0.9 ? "ok" : v >= 0.5 ? "warn" : "bad");
+      const cell = (s) => `<td class="num"><span class="badge ${tone(s.security_level)}">Security ${pct(s.security_level)}</span>
+        <br><span class="small muted">ASR ${pct(s.asr)}${s.risk_reduction != null ? ` · reduction ${pct(s.risk_reduction)}` : ""}</span></td>`;
+      out.innerHTML = `<div class="card stack"><div class="row spread"><h3>All attacks × defences · ${esc(c.targetLabel)}</h3></div>
+        <p class="small muted">${esc(data.note)}</p>
+        <div class="table-wrap"><table><thead><tr><th>Attack</th>${data.columns.map((col) => `<th class="num">${esc(col.name)}</th>`).join("")}</tr></thead>
+        <tbody>${data.rows.map((r) => `<tr><td><strong>${esc(r.name)}</strong></td>${data.columns.map((col) => cell(r.cells[col.id])).join("")}</tr>`).join("")}</tbody></table></div></div>`;
+      out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (err) {
+      out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;
+    } finally { ablationButton.disabled = false; ablationButton.textContent = original; }
+  };
 
   root.querySelector("#sec-run").onclick = async (e) => {
     const button = e.currentTarget;
@@ -1005,6 +1029,23 @@ function renderSecurity() {
         }
 
         out.innerHTML = selection + resultsHtml;
+        out.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (err) {
+        out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;
+      } finally { button.disabled = false; button.textContent = original; }
+      return;
+    }
+
+    // Adaptive attacker with no defence: every technique, every coalition, best kept.
+    if (securityTab === "inference" && attacks.includes("adaptive")) {
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "Running…";
+      try {
+        const data = await api("/api/security/adaptive", "POST", {});
+        out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Adaptive attacker (worst case) · ${esc(c.targetLabel)}</h3></div>
+          <p class="small muted">${esc(data.scenario)}</p>${attackResultTable(data)}</div>
+          ${securityMeasures(data.security, "Security measures · Adaptive attacker", [data.baseline, ...data.rows])}`;
         out.scrollIntoView({ behavior: "smooth", block: "nearest" });
       } catch (err) {
         out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;

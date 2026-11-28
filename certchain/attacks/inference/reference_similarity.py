@@ -281,28 +281,34 @@ def run_experiment(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS,
     }
 
 
-def run_on_views(views, seed: int = SEED, per_class: int = RECORDS_PER_CLASS) -> dict:
+def run_on_views(views, seed: int = SEED, per_class: int = RECORDS_PER_CLASS, encoding=None) -> dict:
     """Run the attack once per defence-supplied node view (see views.py).
 
     Each node's attacker compares only the Bloom positions its view exposes. The full
-    filter is run as the no-defence baseline, with the same records and seed.
+    filter is run as the no-defence baseline, with the same records and seed. With an
+    `encoding`, the views are taken over the records encoded the defence's way (same
+    records, same reference/target split).
     """
     impl = systems()["bloom"].config["anchor"]
     m = impl.M
     views = check_views(views, m)
     _, references, targets = prepare(impl, seed, per_class)
+    if encoding is not None:
+        _, seen_references, seen_targets = prepare(impl, seed, per_class, encoding.encode)
+    else:
+        seen_references, seen_targets = references, targets
     chance = 1 / len(CLASSES)
 
-    def measure(label, nodes, mask):
+    def measure(label, nodes, mask, refs=seen_references, tgts=seen_targets):
         with timer() as elapsed:
-            _, metrics = attack_view(references, targets, lambda bits: bits & mask, mask.bit_count())
+            _, metrics = attack_view(refs, tgts, lambda bits: bits & mask, mask.bit_count())
         return row(label, nodes, mask, m, metrics["accuracy"],
                    f"Accuracy {metrics['accuracy']:.0%}, macro F1 {metrics['macro_f1']:.2f} "
                    f"({metrics['correct']} of {metrics['total']} targets)",
                    accuracy=metrics["accuracy"], macro_f1=metrics["macro_f1"],
                    attack_ms=round(elapsed(), 1))
 
-    baseline = measure("Complete Bloom filter (no defence)", [], full_mask(m))
+    baseline = measure("Complete Bloom filter (no defence)", [], full_mask(m), references, targets)
     rows = [measure(v["node"], [v["node"]], v["mask"]) for v in views]
     worst = max(rows, key=lambda r: r["success_rate"])
     result = {
@@ -313,8 +319,8 @@ def run_on_views(views, seed: int = SEED, per_class: int = RECORDS_PER_CLASS) ->
         "rows": rows,
         "conclusion": (
             f"With the complete filter the attack inferred the programme for "
-            f"{baseline['success_rate']:.0%} of targets. Under this partitioning the best single "
-            f"node ({worst['label']}, {worst['visibility_percentage']}% of bits) reached "
+            f"{baseline['success_rate']:.0%} of targets. Under this defence the best "
+            f"view ({worst['label']}, {worst['visibility_percentage']}% of bits) reached "
             f"{worst['success_rate']:.0%}, against {chance:.0%} for a random guess. Measured on "
             f"{len(targets)} synthetic target records ({len(references)} labelled references), "
             f"not the chain's blocks, because the attack needs records whose programme is known."

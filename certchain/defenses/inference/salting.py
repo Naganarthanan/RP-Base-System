@@ -35,6 +35,7 @@ class SaltedEncoding:
         self.impl = impl
         self._rng = random.Random(seed)
         self._salts: dict = {}
+        self._filters: dict = {}
 
     def salt(self, record_id) -> str:
         if record_id not in self._salts:
@@ -45,13 +46,20 @@ class SaltedEncoding:
         return f"salt={self.salt(record_id)}|{item}"
 
     def filter(self, tx: dict, record_id, rng: random.Random) -> BloomFilter:
-        """The record's salted, padded filter (padding drawn from `rng`, as BloomAnchor.build does)."""
+        """The record's salted, padded filter (padding drawn from `rng`, as BloomAnchor.build does).
+
+        A record is encoded once: later calls return the same filter, so the defence and
+        the attack it hands this encoding to work on identical filters.
+        """
+        if record_id in self._filters:
+            return self._filters[record_id]
         items = record_items(tx)
         bloom = self.impl.new_filter()
         for item in items:
             bloom.add(self.salted(item, record_id))
         for _ in range(self.impl.PAD_TO - len(items)):
             bloom.add("pad=" + rng.getrandbits(128).to_bytes(16, "big").hex())
+        self._filters[record_id] = bloom
         return bloom
 
     def encode(self, tx: dict, record_id, rng: random.Random) -> int:
@@ -134,7 +142,7 @@ def run_salted_hashing(attack: str | None = None, options: dict | None = None) -
     if attack is not None:
         from ...attacks.inference import ENCODING_RUNNERS
         runner = ENCODING_RUNNERS.get(attack)
-        result = runner(SaltedEncoding(impl)) if runner else None
+        result = runner(encoding) if runner else None
         attack_support = {
             "status": "executed" if result else "unsupported_attack",
             "requested_attack": attack,

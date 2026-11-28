@@ -685,6 +685,48 @@ def test_salted_hashing_reports_unsupported_attacks(site):
     assert support["status"] == "unsupported_attack" and support["result"] is None
 
 
+def _combined(site, attack):
+    return site.test_client().post("/api/security/defend", json={
+        "check": "inference", "attack": attack, "defenses": ["salted_partitioned"],
+    }).get_json()["results"][0]
+
+
+def test_salted_partitioning_still_verifies(site):
+    data = _combined(site, "collusion")
+    assert data["salted"] is True and data["strategy_name"].startswith("Salted + ")
+    assert data["all_reconstructed"] is True and data["all_verified"] is True
+    acc = data["verification_accuracy"]
+    assert acc["accuracy"] == 1 and acc["tampered_rejected"] == acc["tampered_records"] > 0
+
+
+def test_salted_partitioning_stops_every_attack_short_of_all_nodes(site):
+    for attack in ("collusion", "pattern_mining", "reference_similarity", "adaptive"):
+        security = _combined(site, attack)["attack_support"]["result"]["security"]
+        # Nothing learned beyond a random guess (small slack for the 1-in-3 reference guess).
+        assert security["advantage"] <= 0.1, (attack, security)
+
+
+def test_adaptive_attacker_keeps_the_best_technique(site):
+    data = site.test_client().post("/api/security/adaptive").get_json()
+    assert [r["colluding"] for r in data["rows"]] == [1, 2, 3]
+    # No defence: reference similarity already wins with a single node.
+    assert data["rows"][0]["technique"] == "Reference similarity" and data["rows"][0]["success_rate"] > 0.9
+    # Partitioning alone does not stop it; salting alone does not stop the key holders.
+    partitioned = _defend(site, "sequential", "adaptive")["security"]
+    salted = _salted(site, "adaptive")["attack_support"]["result"]["security"]
+    assert partitioned["advantage"] > 0.9
+    assert salted["technique"] == "Dictionary" and salted["advantage"] > 0
+
+
+def test_ablation_covers_every_attack_and_defence(site):
+    data = site.test_client().post("/api/security/ablation").get_json()
+    assert [c["id"] for c in data["columns"]] == ["none", "sequential", "salted", "salted_partitioned"]
+    assert [r["attack"] for r in data["rows"]] == ["collusion", "pattern_mining", "reference_similarity", "adaptive"]
+    adaptive = next(r for r in data["rows"] if r["attack"] == "adaptive")["cells"]
+    assert adaptive["salted_partitioned"]["security_level"] >= 0.9
+    assert adaptive["salted_partitioned"]["security_level"] > adaptive["sequential"]["security_level"]
+
+
 def test_view_masks_must_be_valid():
     from certchain.attacks.inference.views import check_views
     with pytest.raises(ValueError):
