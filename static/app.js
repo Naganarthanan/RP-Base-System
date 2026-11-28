@@ -324,22 +324,21 @@ const SECURITY = {
     target: "bloom", targetLabel: "Bloom filter system",
     note: "Always on in the Bloom filter system: keyed HMAC bit positions and random padding to a fixed item count.",
     attacks: [
-      { id: "collusion", name: "Colluding-node dictionary attack", desc: "Organisations pool their key shares and partitions, then test guessed programmes against every block.", live: true,
-        tag: "Recommended defence: Horizontal partitioning (sequential / interleaved)" },
-      { id: "pattern_mining", name: "Pattern / frequency linkage attack", desc: "Link records that share a value by counting shared Bloom-filter bits, without the key.", live: true,
-        tag: "Recommended defence: Per-record salted hashing" },
-      { id: "reference_similarity", name: "Reference-assisted fragment inference", desc: "Infer a hidden programme from a full or 1/2–1/5 Bloom fragment using known records (300 synthetic records).", live: true,
-        tag: "Recommended defence: Per-record salted hashing" },
+      { id: "collusion", name: "Colluding-node dictionary attack", desc: "Organisations pool their key shares and partitions, then test guessed programmes against every block.", live: true },
+      { id: "pattern_mining", name: "Pattern / frequency linkage attack", desc: "Link records that share a value by counting shared Bloom-filter bits, without the key.", live: true },
+      { id: "reference_similarity", name: "Reference-assisted fragment inference", desc: "Infer a hidden programme from a full or 1/2–1/5 Bloom fragment using known records (300 synthetic records).", live: true },
     ],
+    // `counters`: the attacks each defence is designed against. Selecting an attack
+    // enables only these defences; the rest stay disabled.
     defenses: [
       { id: "sequential", name: "Horizontal partitioning: sequential", desc: "Split each Bloom-filter bit array into balanced contiguous ranges and assign one range to each node.", live: true,
-        tag: "Counters: Colluding-node dictionary attack" },
+        counters: ["collusion"] },
       { id: "interleaved", name: "Horizontal partitioning: interleaved", desc: "Distribute alternating Bloom-filter bit positions across nodes in round-robin order.", live: true,
-        tag: "Counters: Colluding-node dictionary attack" },
+        counters: ["collusion"] },
       { id: "pairwise", name: "Horizontal partitioning: pairwise (availability)", desc: "Store each sequential partition on two nodes so verification survives one unavailable node. Two nodes then see the whole filter, so it is weaker against collusion.", live: true,
-        tag: "Counters: node failure" },
+        counters: ["collusion"] },
       { id: "salted", name: "Per-record salted hashing", desc: "Mix a random per-record salt into every keyed hash, so the same value sets different bits in different records.", live: true,
-        tag: "Counters: Pattern / frequency linkage, Reference-assisted fragment inference" },
+        counters: ["pattern_mining", "reference_similarity"] },
     ],
   },
 };
@@ -349,7 +348,7 @@ let securityTab = "manipulation";
 function picklist(kind, items) {
   return items.map((s) => `<label class="pick">
       <input type="checkbox" data-kind="${kind}" value="${esc(s.id)}">
-      <span class="pick-body"><strong>${esc(s.name)}</strong><span class="small muted">${esc(s.desc)}</span>${s.tag ? `<span class="pick-tag small">${esc(s.tag)}</span>` : ""}</span></label>`).join("");
+      <span class="pick-body"><strong>${esc(s.name)}</strong><span class="small muted">${esc(s.desc)}</span></span></label>`).join("");
 }
 
 const pct = (x) => `${(x * 100).toFixed(1).replace(/\.0$/, "")}%`;
@@ -745,9 +744,27 @@ function renderSecurity() {
   const picked = (kind) => [...root.querySelectorAll(`input[data-kind="${kind}"]:checked`)];
   const nameOf = (kind, id) => (kind === "attack" ? c.attacks : c.defenses).find((s) => s.id === id).name;
 
+  // When defences declare `counters`, only the defences for the selected attack(s) can be picked.
+  const paired = c.defenses.some((d) => d.counters);
+  const applies = (defId, attackIds) =>
+    attackIds.some((a) => ((c.defenses.find((d) => d.id === defId) || {}).counters || []).includes(a));
+  const syncDefences = () => {
+    if (!paired) return;
+    const a = picked("attack").map((i) => i.value);
+    root.querySelectorAll('input[data-kind="defense"]').forEach((i) => {
+      const ok = applies(i.value, a);
+      i.disabled = !ok;
+      if (!ok) i.checked = false;
+    });
+  };
+
   const updateSummary = () => {
     const d = picked("defense").map((i) => i.value);
     const a = picked("attack").map((i) => i.value);
+    if (paired && !a.length) {
+      summary.textContent = "Select an attack — the defences that apply to it become available.";
+      return;
+    }
     if (!d.length) {
       summary.textContent = "No defence selected — baseline run.";
       return;
@@ -760,7 +777,9 @@ function renderSecurity() {
         ? `${d.length} live defence${d.length === 1 ? "" : "s"} selected — ready to run.`
         : `${d.length} live defence${d.length === 1 ? "" : "s"} selected — select a live attack.`;
   };
-  root.querySelectorAll('input[type="checkbox"]').forEach((i) => { i.onchange = updateSummary; });
+  root.querySelectorAll('input[type="checkbox"]').forEach((i) => { i.onchange = () => { syncDefences(); updateSummary(); }; });
+  syncDefences();
+  updateSummary();
 
   root.querySelectorAll("[data-tab]").forEach((b) => {
     b.onclick = () => { securityTab = b.dataset.tab; renderSecurity(); };
@@ -799,7 +818,10 @@ function renderSecurity() {
         button.textContent = "Running…";
         try {
           for (const attack of liveAttacks) {
-            const data = await api("/api/security/defend", "POST", { check: securityTab, attack, defenses: attackDefs });
+            // Each attack runs only against the defences designed for it.
+            const defs = paired ? attackDefs.filter((id) => applies(id, [attack])) : attackDefs;
+            if (!defs.length) continue;
+            const data = await api("/api/security/defend", "POST", { check: securityTab, attack, defenses: defs });
             data.results.forEach((r) => { out.insertAdjacentHTML("beforeend", defenseReport(r, c)); });
           }
         } catch (err) {
