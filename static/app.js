@@ -347,8 +347,20 @@ const SECURITY = {
         saltOption: true,
         saltLabel: "Sequential",
       },
-      { id: "interleaved", name: "Horizontal partitioning: interleaved", desc: "Distribute alternating Bloom-filter bit positions across nodes in round-robin order.", live: true,
-        counters: ["collusion", "adaptive"] },
+      {
+        id: "interleaved",
+        name: "Horizontal partitioning: interleaved",
+        desc: "Distribute alternating Bloom-filter bit positions across nodes in round-robin order.",
+        live: true,
+        counters: [
+          "collusion",
+          "pattern_mining",
+          "reference_similarity",
+          "adaptive",
+        ],
+        saltOption: true,
+        saltLabel: "Interleaved",
+      },
       {
         id: "pairwise",
         desc: "Store each sequential partition on two nodes so verification survives one unavailable node. Two nodes then see the whole filter, so it is weaker against collusion.",

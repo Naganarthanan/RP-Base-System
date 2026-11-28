@@ -980,8 +980,9 @@ def run_interleaved_partitioning(
     attack: str | None = None,
     options: dict | None = None,
 ) -> dict:
-    """Evaluate round-robin Interleaved Bit Partitioning."""
-    return _run_partitioning("interleaved", attack, options)
+    """Evaluate interleaved partitioning, optionally after per-record salting."""
+    encoding = _optional_salted_encoding(options, "interleaved")
+    return _run_partitioning("interleaved", attack, options, encoding)
 
 
 def run_pairwise_partitioning(
