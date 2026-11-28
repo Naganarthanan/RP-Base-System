@@ -363,6 +363,7 @@ const SECURITY = {
       },
       {
         id: "pairwise",
+        name: "Horizontal partitioning: pairwise (availability)",
         desc: "Store each sequential partition on two nodes so verification survives one unavailable node. Two nodes then see the whole filter, so it is weaker against collusion.",
         live: true,
         counters: [
