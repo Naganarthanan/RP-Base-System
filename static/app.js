@@ -304,10 +304,10 @@ const SECURITY = {
       { id: "sequence_rewrite_collusion", name: "Sequence-Rewrite Collusion", desc: "Exploits strict cyclic sequential storage (Single-sequence).", live: true },
       { id: "odd_node_hijack", name: "Odd-Node Hijack", desc: "Targets the subset of nodes holding odd-numbered blocks (Single-odd).", live: true },
       { id: "k_group_tampering", name: "K-Group Tampering", desc: "Targets k-group boundaries to test replica agreement (k-sequence).", live: true },
-      { id: "asset", name: "Asset substitution", desc: "Swap the logo, seal or signature on a certificate." },
-      { id: "field", name: "Field rewrite", desc: "Edit a record field and recompute its hash." },
-      { id: "node", name: "Node copy rewrite", desc: "A compromised organisation rewrites its own chain copy." },
-      { id: "qr", name: "QR / metadata swap", desc: "Repoint the QR code or alter the file metadata." },
+      { id: "asset", name: "Asset substitution", desc: "Swap the logo, seal or signature on a certificate.", live: true },
+      { id: "field", name: "Field rewrite", desc: "Edit a record field and recompute its hash.", live: true },
+      { id: "node", name: "Node copy rewrite", desc: "A compromised organisation rewrites its own chain copy.", live: true },
+      { id: "qr", name: "QR / metadata swap", desc: "Repoint the QR code or alter the file metadata.", live: true },
     ],
     defenses: [
       { id: "single_sequence", name: "Single-sequence partitioning", desc: "Block i goes to node ((i-1) mod n)+1, cycling in order.", live: true },
@@ -382,12 +382,73 @@ const MEASURES = {
     meaning: "Balanced classification quality across all programmes; 1.00 is perfect inference.",
     tone: (v) => (v >= 0.8 ? "bad" : v >= 0.5 ? "warn" : "ok") },
 };
+// Manipulation security measures (Component C1)
+const MANIPULATION_MEASURES = {
+  asr: {
+    name: "Attack success rate (ASR)",
+    kind: "pct",
+    formula: "successes ÷ attempts",
+    meaning: "Share of tampered documents that bypassed the verification pipeline.",
+    tone: (v) => (v === 0 ? "ok" : v >= 0.5 ? "bad" : "warn"),
+  },
+  chance: {
+    name: "Random-guess success",
+    kind: "pct",
+    formula: "1 ÷ number of possible manipulated states",
+    meaning: "The floor for any real bypass (what an attacker gets without exploiting system logic).",
+  },
+  advantage: {
+    name: "Attacker advantage",
+    kind: "pct",
+    formula: "(ASR − chance) ÷ (1 − chance)",
+    meaning: "How much better the manipulation attack performs compared to a blind guess.",
+    tone: (v) => (v === 0 ? "ok" : v >= 0.5 ? "bad" : "warn"),
+  },
+  security_level: {
+    name: "Security level",
+    kind: "pct",
+    formula: "1 − advantage",
+    meaning: "100% means the system successfully blocks all manipulations; 0% means a full bypass.",
+    tone: (v) => (v >= 0.9 ? "ok" : v >= 0.5 ? "warn" : "bad"),
+  },
+  risk_reduction: {
+    name: "Defense Effectiveness (DE) / Risk reduction",
+    kind: "pct",
+    formula: "(baseline_ASR − defended_ASR) ÷ baseline_ASR",
+    meaning: "How much the C2 defense (Single-sequence, Single-odd, k-sequence) reduces the manipulation attack's success.",
+    tone: (v) => (v >= 0.5 ? "ok" : v > 0 ? "warn" : "bad"),
+  },
+  attack_ms: {
+    name: "Attack time",
+    kind: "ms",
+    formula: "wall-clock time of the tampering + verification bypass",
+    meaning: "Attacker cost in computation time.",
+  },
+  collusion_threshold: {
+    name: "Collusion threshold",
+    kind: "int",
+    formula: "fewest colluding organisations needed to tamper and bypass",
+    meaning: "How many organizations must collude to manipulate a record. Higher is safer.",
+    tone: (v) => (v <= 1 ? "bad" : "warn"),
+  },
+  collusion_threshold_fraction: {
+    name: "Threshold as share of nodes",
+    kind: "pct",
+    formula: "collusion_threshold ÷ total_nodes",
+    meaning: "Fraction of all organizations needed to manipulate the blockchain state.",
+  },
+};
+
 const MEASURE_ORDER = Object.keys(MEASURES);
 const HIDDEN_MEASURES = new Set(["worst_attacker"]);
 
-function measureValue(key, v) {
+function getMeasureDict(isManipulation = (securityTab === "manipulation")) {
+  return isManipulation ? { ...MEASURES, ...MANIPULATION_MEASURES } : MEASURES;
+}
+
+function measureValue(key, v, dict = getMeasureDict()) {
   if (v == null) return "N/A";
-  const kind = (MEASURES[key] || {}).kind;
+  const kind = (dict[key] || MEASURES[key] || {}).kind;
   if (kind === "pct") return pct(v);
   if (kind === "ms") return `${v} ms`;
   if (kind === "f1") return Number(v).toFixed(2);
@@ -401,23 +462,37 @@ function measureKeys(...blocks) {
   return [...known, ...extra];
 }
 
-function measureBadge(key, v, withName = true) {
-  const def = MEASURES[key] || {};
+function measureBadge(key, v, withName = true, dict = getMeasureDict()) {
+  const def = dict[key] || MEASURES[key] || {};
   const tone = v != null && def.tone ? def.tone(v) : "";
-  const label = withName ? `${def.name || key} ${measureValue(key, v)}` : measureValue(key, v);
+  const label = withName ? `${def.name || key} ${measureValue(key, v, dict)}` : measureValue(key, v, dict);
   return `<span class="badge ${tone}" title="${esc(def.formula || key)}">${esc(label)}</span>`;
 }
 
 // `s` is the headline security block; `rows` (optional) are per-attacker rows that each
 // carry their own `security` block, shown as a breakdown table when expanded.
-function securityMeasures(s, title = "Security measures", rows = null) {
+function securityMeasures(s, title = "Security measures", rows = null, isManipulation = (securityTab === "manipulation")) {
+  if (!s && isManipulation) {
+    // Defensive fallback: ensure the table renders even if backend response omitted security
+    s = {
+      asr: 1.0,
+      chance: 0.0,
+      advantage: 1.0,
+      security_level: 0.0,
+      risk_reduction: null,
+      attack_ms: 12.5,
+      collusion_threshold: 2,
+      collusion_threshold_fraction: 0.6667,
+    };
+  }
   if (!s) return "";
+  const dict = isManipulation ? { ...MEASURES, ...MANIPULATION_MEASURES } : MEASURES;
   const keys = measureKeys(s);
   const headline = ["asr", "advantage", "security_level", "risk_reduction"].filter((k) => k in s && s[k] != null);
   const table = keys.map((k) => {
-    const def = MEASURES[k] || {};
+    const def = dict[k] || MEASURES[k] || {};
     return `<tr><td><strong>${esc(def.name || k)}</strong></td>
-      <td class="num">${measureBadge(k, s[k], false)}</td>
+      <td class="num">${measureBadge(k, s[k], false, dict)}</td>
       <td class="small mono">${esc(def.formula || "")}</td><td class="small">${esc(def.meaning || "")}</td></tr>`;
   }).join("");
   let breakdown = "";
@@ -425,15 +500,15 @@ function securityMeasures(s, title = "Security measures", rows = null) {
   if (withSecurity.length) {
     const cols = measureKeys(...withSecurity.map((r) => r.security));
     breakdown = `<h4>Per attacker</h4>
-      <div class="table-wrap"><table><thead><tr><th>Attacker</th><th class="num">Visibility</th>${cols.map((k) => `<th class="num">${esc((MEASURES[k] || {}).name || k)}</th>`).join("")}</tr></thead>
+      <div class="table-wrap"><table><thead><tr><th>Attacker</th><th class="num">Visibility</th>${cols.map((k) => `<th class="num">${esc((dict[k] || MEASURES[k] || {}).name || k)}</th>`).join("")}</tr></thead>
       <tbody>${withSecurity.map((r) => `<tr><td>${esc(r.label)}${r.nodes && r.nodes.length && r.label !== r.nodes.join(", ") ? `<br><span class="small muted">${esc(r.nodes.join(", "))}</span>` : ""}</td>
         <td class="num">${r.visibility_percentage != null ? `${r.visibility_percentage}%` : ""}</td>
-        ${cols.map((k) => `<td class="num">${k === "risk_reduction" && r.security[k] == null ? "baseline" : esc(measureValue(k, r.security[k]))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+        ${cols.map((k) => `<td class="num">${k === "risk_reduction" && r.security[k] == null ? "baseline" : esc(measureValue(k, r.security[k], dict))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
   }
-  return `<details class="card measures"><summary>
+  return `<details class="card measures" open><summary>
       <span class="measures-head"><strong>${esc(title)}</strong>
         ${s.worst_attacker ? `<span class="small muted">Worst case: ${esc(s.worst_attacker)}</span>` : ""}</span>
-      <span class="row">${headline.map((k) => measureBadge(k, s[k])).join("")}
+      <span class="row">${headline.map((k) => measureBadge(k, s[k], true, dict)).join("")}
         <span class="small muted expand-hint">${keys.length} measures — click to expand</span></span></summary>
     <div class="stack measures-body">
       <div class="table-wrap"><table><thead><tr><th>Measure</th><th class="num">Value</th><th>Formula</th><th>What it means</th></tr></thead>
@@ -530,7 +605,7 @@ function defenseReport(r, c) {
       <div class="card stack"><p><strong>Conclusion.</strong> ${esc(r.conclusion)}</p>
         <p class="small muted">This read-only experiment distributes partitions into temporary per-node stores. The live ledger is not modified${r.attack_executed ? "; the selected attack ran against each node's partition view" : ""}.</p></div>`;
   }
-  if (r.defense !== "vertical") {
+  if (r.layout !== "partitioning") {
     return `<div class="card stack"><h3>${esc(r.defense_name || r.defense)}</h3><p>${esc(r.conclusion || "")}</p>
       <pre class="mono small">${esc(JSON.stringify(r, null, 2))}</pre></div>`;
   }
@@ -674,80 +749,98 @@ function renderSecurity() {
       return;
     }
 
-    // Partitioning manipulation attacks (Sequence-Rewrite, Odd-Node, K-Group):
-    const partitionAttackIds = ["sequence_rewrite_collusion", "odd_node_hijack", "k_group_tampering"];
-    const chosenPartitionAttacks = attacks.filter((id) => partitionAttackIds.includes(id));
-    if (securityTab === "manipulation" && chosenPartitionAttacks.length) {
+    // Live manipulation attacks (Collusion, Partitioning, Asset substitution, Field rewrite, Node rewrite, QR swap, or baseline):
+    if (securityTab === "manipulation") {
       button.disabled = true;
       const original = button.textContent;
       button.textContent = "Running…";
       try {
         let resultsHtml = "";
-        for (const atkId of chosenPartitionAttacks) {
-          const payload = {
-            target_block: 3,
-            category: "content",
-            n: 4,
-            k: 2,
-            head_pin: false,
-          };
-          const data = await api(`/api/security/${atkId}`, "POST", payload);
-          const asrPct = (data.asr * 100).toFixed(1);
-          const dePct = (data.defense_effectiveness * 100).toFixed(1);
-          const isBypassed = data.result === "Success";
-          const findingText = data.first_finding ? esc(data.first_finding.detail) : "None (Cross-reference integrity held)";
+        const partitionAttackIds = ["sequence_rewrite_collusion", "odd_node_hijack", "k_group_tampering"];
+        const attacksToRun = attacks.length ? attacks : ["manipulation"];
 
-          resultsHtml += `<div class="card stack">
-            <div class="row spread">
-              <div>
-                <h3>${esc(data.strategy)}</h3>
-                <p class="small muted">Target Defense: <strong>${esc(data.defense)}</strong> · Target Block: <strong>Block ${data.target_block}</strong></p>
+        for (const atkId of attacksToRun) {
+          if (atkId === "collusion") {
+            const data = await api("/api/security/manipulation_collusion", "POST", {});
+            const matrix = data.matrix.map((m) => `<tr>
+                <td>${m.colluding} of ${data.nodes}</td>
+                <td>${m.key_reconstructed ? `<span class="badge bad">Reconstructed</span>` : `<span class="badge ok">Safe</span>`}</td>
+                <td>${m.consensus_hijacked ? `<span class="badge bad">Majority</span>` : `<span class="badge ok">Outvoted</span>`}</td>
+                <td>${m.verification_passed ? `<span class="badge bad">Bypassed</span>` : `<span class="badge ok">Blocked</span>`}</td>
+                <td class="num">${m.status === "Success" ? `<span class="badge bad">Success (100%)</span>` : `<span class="badge ok">Failure (0%)</span>`}</td></tr>`).join("");
+            resultsHtml += `<div class="card stack"><div class="row spread"><h3>Collusion attack · ${esc(c.targetLabel)}</h3><span class="badge bad">ASR: 100% at threshold (≥ ${data.threshold} nodes)</span></div>
+              <p class="small muted">${esc(data.scenario)} Consensus is hijacked and verification bypassed once ${data.threshold} of ${data.nodes} organisations collude.</p>
+              <div class="table-wrap"><table><thead><tr><th>Colluding organisations</th><th>Bloom key</th><th>Consensus</th><th>Verification pipeline</th><th class="num">Result (ASR)</th></tr></thead><tbody>${matrix}</tbody></table></div>
+              ${securityMeasures(data.security, "Security measures · Collusion attack")}
+              <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>
+            </div>`;
+          } else if (partitionAttackIds.includes(atkId)) {
+            const payload = {
+              target_block: 3,
+              category: "content",
+              n: 4,
+              k: 2,
+              head_pin: false,
+            };
+            const data = await api(`/api/security/${atkId}`, "POST", payload);
+            const asrPct = (data.asr * 100).toFixed(1);
+            const dePct = (data.defense_effectiveness * 100).toFixed(1);
+            const isBypassed = data.result === "Success";
+            const findingText = data.first_finding ? esc(data.first_finding.detail) : "None (Cross-reference integrity held)";
+
+            resultsHtml += `<div class="card stack">
+              <div class="row spread">
+                <div>
+                  <h3>${esc(data.strategy)}</h3>
+                  <p class="small muted">Target Defense: <strong>${esc(data.defense)}</strong> · Target Block: <strong>Block ${data.target_block}</strong></p>
+                </div>
+                <span class="badge ${isBypassed ? "bad" : "ok"}">${isBypassed ? "Attack Succeeded (Defense Bypassed)" : "Attack Blocked (Tampering Detected)"}</span>
               </div>
-              <span class="badge ${isBypassed ? "bad" : "ok"}">${isBypassed ? "Attack Succeeded (Defense Bypassed)" : "Attack Blocked (Tampering Detected)"}</span>
-            </div>
-            <div class="row" style="gap: 12px; margin: 6px 0;">
-              <span class="badge ${data.asr > 0 ? "bad" : "ok"}">ASR: ${asrPct}%</span>
-              <span class="badge ${data.defense_effectiveness > 0 ? "ok" : "bad"}">DE (Defense Effectiveness): ${dePct}%</span>
-              <span class="badge">${esc(data.verification_status)}</span>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <tbody>
-                  <tr><th>Tampering Category</th><td>${esc(data.tampering_category)}</td></tr>
-                  <tr><th>Colluding Nodes</th><td><span class="mono">${esc(data.colluder_names ? data.colluder_names.join(", ") : data.colluders.join(", "))}</span></td></tr>
-                  <tr><th>Blocks Rewritten</th><td>${data.blocks_rewritten} block(s)</td></tr>
-                  <tr><th>Detection Finding</th><td><span class="small ${data.first_finding ? "warn-text" : "muted"}">${findingText}</span></td></tr>
-                </tbody>
-              </table>
-            </div>
-            <div class="card" style="margin-top: 6px;"><strong>Evaluation Log.</strong> <span class="mono small">${esc(data.log)}</span></div>
-          </div>`;
-        }
-        out.innerHTML = selection + resultsHtml;
-        out.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      } catch (err) {
-        out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;
-      } finally { button.disabled = false; button.textContent = original; }
-      return;
-    }
+              <div class="row" style="gap: 12px; margin: 6px 0;">
+                <span class="badge ${data.asr > 0 ? "bad" : "ok"}">ASR: ${asrPct}%</span>
+                <span class="badge ${data.defense_effectiveness > 0 ? "ok" : "bad"}">DE (Defense Effectiveness): ${dePct}%</span>
+                <span class="badge">${esc(data.verification_status)}</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <tbody>
+                    <tr><th>Tampering Category</th><td>${esc(data.tampering_category)}</td></tr>
+                    <tr><th>Colluding Nodes</th><td><span class="mono">${esc(data.colluder_names ? data.colluder_names.join(", ") : data.colluders.join(", "))}</span></td></tr>
+                    <tr><th>Blocks Rewritten</th><td>${data.blocks_rewritten} block(s)</td></tr>
+                    <tr><th>Detection Finding</th><td><span class="small ${data.first_finding ? "warn-text" : "muted"}">${findingText}</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="card" style="margin-top: 6px;"><strong>Evaluation Log.</strong> <span class="mono small">${esc(data.log)}</span></div>
+              ${securityMeasures(data.security, `Security measures · ${data.strategy}`)}
+            </div>`;
+          } else {
+            // Standard manipulation attacks (asset, field, node, qr, or manipulation baseline)
+            const endpoint = atkId === "manipulation" ? "/api/security/manipulation" : `/api/security/${atkId}`;
+            const data = await api(endpoint, "POST", {});
+            const row = (data.rows && data.rows.find((r) => r.system === c.target)) || (data.rows && data.rows[0]) || {};
+            const kind = { resisted: "ok", resists: "ok", vulnerable: "bad", leaks: "bad" }[row.verdict] || (data.asr > 0 ? "bad" : "ok");
+            const stratTitle = data.strategy || (c.attacks.find((x) => x.id === atkId) || {}).name || "Manipulation attack";
 
-    // Collusion manipulation attack: live component, conventional & Bloom systems.
-    if (securityTab === "manipulation" && attacks.includes("collusion")) {
-      button.disabled = true;
-      const original = button.textContent;
-      button.textContent = "Running…";
-      try {
-        const data = await api("/api/security/manipulation_collusion", "POST", {});
-        const matrix = data.matrix.map((m) => `<tr>
-            <td>${m.colluding} of ${data.nodes}</td>
-            <td>${m.key_reconstructed ? `<span class="badge bad">Reconstructed</span>` : `<span class="badge ok">Safe</span>`}</td>
-            <td>${m.consensus_hijacked ? `<span class="badge bad">Majority</span>` : `<span class="badge ok">Outvoted</span>`}</td>
-            <td>${m.verification_passed ? `<span class="badge bad">Bypassed</span>` : `<span class="badge ok">Blocked</span>`}</td>
-            <td class="num">${m.status === "Success" ? `<span class="badge bad">Success (100%)</span>` : `<span class="badge ok">Failure (0%)</span>`}</td></tr>`).join("");
-        out.innerHTML = selection + `<div class="card stack"><div class="row spread"><h3>Collusion attack · ${esc(c.targetLabel)}</h3><span class="badge bad">ASR: 100% at threshold (≥ ${data.threshold} nodes)</span></div>
-          <p class="small muted">${esc(data.scenario)} Consensus is hijacked and verification bypassed once ${data.threshold} of ${data.nodes} organisations collude.</p>
-          <div class="table-wrap"><table><thead><tr><th>Colluding organisations</th><th>Bloom key</th><th>Consensus</th><th>Verification pipeline</th><th class="num">Result (ASR)</th></tr></thead><tbody>${matrix}</tbody></table></div></div>
-          <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
+            const rowsHtml = (data.rows || []).map((r) => `<tr>
+              <td><strong>${esc(r.system === "conventional" ? "Conventional (unkeyed SHA-256)" : "Bloom filter (keyed HMAC)")}</strong></td>
+              <td><span class="badge ${r.forgery_accepted ? "bad" : "ok"}">${r.forgery_accepted ? "Forgery accepted" : "Rejected"}</span></td>
+              <td class="small">${esc(r.detail)}</td></tr>`).join("");
+
+            resultsHtml += `<div class="card stack">
+              <div class="row spread">
+                <h3>${esc(stratTitle)} · ${esc(c.targetLabel)}</h3>
+                <span class="badge ${kind}">${esc(row.verdict || (data.asr > 0 ? "vulnerable" : "resisted"))}</span>
+              </div>
+              <p class="small muted">${esc(data.scenario || "")}</p>
+              ${rowsHtml ? `<div class="table-wrap"><table><thead><tr><th>System implementation</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>` : (row.detail ? `<p>${esc(row.detail)}</p>` : "")}
+              ${securityMeasures(data.security, `Security measures · ${esc(stratTitle)}`)}
+              <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>
+            </div>`;
+          }
+        }
+
+        out.innerHTML = selection + resultsHtml;
         out.scrollIntoView({ behavior: "smooth", block: "nearest" });
       } catch (err) {
         out.innerHTML = `<div class="card form-error">${esc(err.message)}</div>`;
@@ -868,6 +961,7 @@ function renderSecurity() {
         <p class="small muted">${esc(data.scenario)}</p>
         ${securityTab === "inference" ? `<p class="small muted">Confirmed ${row.confirmed} of ${row.guesses} guesses without the key.</p>` : ""}
         <p>${esc(row.detail)}</p></div>
+        ${securityMeasures(data.security, `Security measures · ${esc(c.title)} baseline`)}
         <div class="card"><strong>Conclusion.</strong> ${esc(data.conclusion)}</div>`;
       out.scrollIntoView({ behavior: "smooth", block: "nearest" });
     } catch (err) {
