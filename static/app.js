@@ -326,18 +326,11 @@ const SECURITY = {
       { id: "collusion", name: "Collusion among organisations", desc: "Node organisations pool their key shares to reconstruct the Bloom key.", live: true },
       { id: "pattern_mining", name: "Attack pattern mining", desc: "Link records by Bloom-filter similarity, without the key.", live: true },
       { id: "reference_similarity", name: "Reference-assisted fragment inference", desc: "Infer a hidden programme from a full or 1/2–1/5 Bloom fragment using known records.", live: true },
-      { id: "dictionary", name: "Dictionary attack", desc: "Hash candidate values and match them to the chain." },
-      { id: "fieldmatch", name: "Per-field match leak", desc: "Read which field differs from a verify response." },
-      { id: "frequency", name: "Frequency analysis", desc: "Count repeated hashes to rank likely values." },
-      { id: "rainbow", name: "Rainbow table", desc: "Look up precomputed hashes of common values." },
     ],
     defenses: [
-      { id: "keyedbloom", name: "Keyed Bloom filter", desc: "Derive bit positions from HMAC under a secret key." },
-      { id: "salt", name: "Salted hashing", desc: "Add a per-record salt before hashing each field." },
       { id: "sequential", name: "Sequential Partitioning", desc: "Split each Bloom-filter bit array into balanced contiguous ranges and assign one range to each node.", live: true },
       { id: "interleaved", name: "Interleaved Partitioning", desc: "Distribute alternating Bloom-filter bit positions across nodes in round-robin order.", live: true },
       { id: "pairwise", name: "Pairwise Partitioning", desc: "Store each sequential Bloom-filter partition on two nodes so verification survives one unavailable node.", live: true },
-      { id: "padding", name: "Field padding / k-anonymity", desc: "Pad the filter so field counts do not leak." },
     ],
   },
 };
