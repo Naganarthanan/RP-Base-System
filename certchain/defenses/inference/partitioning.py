@@ -952,12 +952,28 @@ def _run_partitioning(
     }
 
 
+def _optional_salted_encoding(options: dict | None, strategy: str):
+    """Build the per-record salted encoding requested by a partition strategy."""
+    if options is not None and not isinstance(options, dict):
+        raise PartitionError("defence options must be an object")
+    salted = (options or {}).get("salted", False)
+    if not isinstance(salted, bool):
+        raise PartitionError(f"{strategy} salted option must be a boolean")
+    if not salted:
+        return None
+
+    from .salting import SaltedEncoding
+
+    return SaltedEncoding(systems()["bloom"].config["anchor"])
+
+
 def run_sequential_partitioning(
     attack: str | None = None,
     options: dict | None = None,
 ) -> dict:
-    """Evaluate balanced contiguous Sequential Bit Partitioning."""
-    return _run_partitioning("sequential", attack, options)
+    """Evaluate contiguous partitioning, optionally after per-record salting."""
+    encoding = _optional_salted_encoding(options, "sequential")
+    return _run_partitioning("sequential", attack, options, encoding)
 
 
 def run_interleaved_partitioning(
@@ -973,16 +989,7 @@ def run_pairwise_partitioning(
     options: dict | None = None,
 ) -> dict:
     """Evaluate pairwise replication, optionally after per-record salting."""
-    if options is not None and not isinstance(options, dict):
-        raise PartitionError("defence options must be an object")
-    salted = (options or {}).get("salted", False)
-    if not isinstance(salted, bool):
-        raise PartitionError("pairwise salted option must be a boolean")
-    encoding = None
-    if salted:
-        from .salting import SaltedEncoding
-
-        encoding = SaltedEncoding(systems()["bloom"].config["anchor"])
+    encoding = _optional_salted_encoding(options, "pairwise")
     return _run_partitioning("pairwise", attack, options, encoding)
 
 

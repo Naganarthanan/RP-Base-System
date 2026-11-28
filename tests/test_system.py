@@ -550,6 +550,55 @@ def test_pairwise_salted_option_must_be_boolean(site):
     assert response.get_json()["error"] == "pairwise salted option must be a boolean"
 
 
+def test_sequential_partitioning_optionally_applies_per_record_salting(site):
+    client = site.test_client()
+    plain = client.post(
+        "/api/security/defend",
+        json={
+            "check": "inference",
+            "attack": "pattern_mining",
+            "defenses": ["sequential"],
+        },
+    ).get_json()["results"][0]
+    response = client.post(
+        "/api/security/defend",
+        json={
+            "check": "inference",
+            "attack": "pattern_mining",
+            "defenses": ["sequential"],
+            "options": {"sequential": {"salted": True}},
+        },
+    )
+    assert response.status_code == 200
+    data = response.get_json()["results"][0]
+
+    assert data["strategy"] == "sequential" and data["salted"] is True
+    assert data["strategy_name"] == "Salted + Sequential Bit Partitioning"
+    assert data["placement"] == "single_copy" and data["replication_factor"] == 1
+    assert data["all_reconstructed"] is True and data["all_verified"] is True
+    assert data["verification_accuracy"]["accuracy"] == 1
+    assert data["attack_executed"] is True
+    assert data["attack_support"]["result"]["security"]["asr"] == 0
+    assert plain["attack_support"]["result"]["security"]["asr"] > 0
+    assert data["metrics"]["storage_bytes_per_record"] == (
+        plain["metrics"]["storage_bytes_per_record"] + 16
+    )
+
+
+def test_sequential_salted_option_must_be_boolean(site):
+    response = site.test_client().post(
+        "/api/security/defend",
+        json={
+            "check": "inference",
+            "attack": "collusion",
+            "defenses": ["sequential"],
+            "options": {"sequential": {"salted": "yes"}},
+        },
+    )
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "sequential salted option must be a boolean"
+
+
 @pytest.mark.parametrize(("defense", "attack"), [
     ("sequential", "collusion"),
     ("interleaved", "pattern_mining"),

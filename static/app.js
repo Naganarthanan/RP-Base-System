@@ -333,13 +333,24 @@ const SECURITY = {
     // `counters`: the attacks each defence is designed against. Selecting an attack
     // enables only these defences; the rest stay disabled.
     defenses: [
-      { id: "sequential", name: "Horizontal partitioning: sequential", desc: "Split each Bloom-filter bit array into balanced contiguous ranges and assign one range to each node.", live: true,
-        counters: ["collusion", "adaptive"] },
+      {
+        id: "sequential",
+        name: "Horizontal partitioning: sequential",
+        desc: "Split each Bloom-filter bit array into balanced contiguous ranges and assign one range to each node.",
+        live: true,
+        counters: [
+          "collusion",
+          "pattern_mining",
+          "reference_similarity",
+          "adaptive",
+        ],
+        saltOption: true,
+        saltLabel: "Sequential",
+      },
       { id: "interleaved", name: "Horizontal partitioning: interleaved", desc: "Distribute alternating Bloom-filter bit positions across nodes in round-robin order.", live: true,
         counters: ["collusion", "adaptive"] },
       {
         id: "pairwise",
-        name: "Horizontal partitioning: pairwise (availability)",
         desc: "Store each sequential partition on two nodes so verification survives one unavailable node. Two nodes then see the whole filter, so it is weaker against collusion.",
         live: true,
         counters: [
@@ -349,6 +360,7 @@ const SECURITY = {
           "adaptive",
         ],
         saltOption: true,
+        saltLabel: "Pairwise",
       },
       { id: "salted", name: "Per-record salted hashing", desc: "Mix a random per-record salt into every keyed hash, so the same value sets different bits in different records.", live: true,
         counters: ["pattern_mining", "reference_similarity", "adaptive"] },
@@ -367,8 +379,8 @@ function picklist(kind, items) {
         ? `<div class="pick pick-with-option">
         <label class="pick-main"><input type="checkbox" data-kind="${kind}" value="${esc(s.id)}">
           <span class="pick-body"><strong>${esc(s.name)}</strong><span class="small muted">${esc(s.desc)}</span></span></label>
-        <label class="pick-suboption" id="pairwise-salt-option" hidden><input type="checkbox" id="pairwise-salt">
-          <span class="pick-body"><strong>Add per-record salting</strong><span class="small muted">Checked: Salted + Pairwise. Unchecked: plain Pairwise.</span></span></label></div>`
+        <label class="pick-suboption" data-salt-option-for="${esc(s.id)}" hidden><input type="checkbox" data-salt-for="${esc(s.id)}">
+          <span class="pick-body"><strong>Add per-record salting</strong><span class="small muted">Checked: Salted + ${esc(s.saltLabel || s.name)}. Unchecked: plain ${esc(s.saltLabel || s.name)}.</span></span></label></div>`
         : `<label class="pick">
         <input type="checkbox" data-kind="${kind}" value="${esc(s.id)}">
         <span class="pick-body"><strong>${esc(s.name)}</strong><span class="small muted">${esc(s.desc)}</span></span></label>`,
@@ -849,17 +861,20 @@ function renderSecurity() {
   const paired = c.defenses.some((d) => d.counters);
   const applies = (defId, attackIds) =>
     attackIds.some((a) => ((c.defenses.find((d) => d.id === defId) || {}).counters || []).includes(a));
-  const pairwiseSaltOption = root.querySelector("#pairwise-salt-option");
-  const pairwiseSalt = root.querySelector("#pairwise-salt");
-  const syncPairwiseSalt = () => {
-    if (!pairwiseSaltOption || !pairwiseSalt) return;
-    const pairwise = root.querySelector(
-      'input[data-kind="defense"][value="pairwise"]',
-    );
-    const enabled = Boolean(pairwise && pairwise.checked && !pairwise.disabled);
-    pairwiseSaltOption.hidden = !enabled;
-    pairwiseSalt.disabled = !enabled;
-    if (!enabled) pairwiseSalt.checked = false;
+  const syncSaltOptions = () => {
+    root.querySelectorAll("[data-salt-option-for]").forEach((option) => {
+      const defenseId = option.dataset.saltOptionFor;
+      const saltInput = option.querySelector("[data-salt-for]");
+      const defenseInput = root.querySelector(
+        `input[data-kind="defense"][value="${defenseId}"]`,
+      );
+      const enabled = Boolean(
+        defenseInput && defenseInput.checked && !defenseInput.disabled,
+      );
+      option.hidden = !enabled;
+      saltInput.disabled = !enabled;
+      if (!enabled) saltInput.checked = false;
+    });
   };
   const syncDefences = () => {
     if (!paired) return;
@@ -893,12 +908,12 @@ function renderSecurity() {
   root.querySelectorAll('input[type="checkbox"]').forEach((i) => {
     i.onchange = () => {
       syncDefences();
-      syncPairwiseSalt();
+      syncSaltOptions();
       updateSummary();
     };
   });
   syncDefences();
-  syncPairwiseSalt();
+  syncSaltOptions();
   updateSummary();
 
   root.querySelectorAll("[data-tab]").forEach((b) => {
@@ -954,19 +969,21 @@ function renderSecurity() {
     const button = e.currentTarget;
     const attacks = picked("attack").map((i) => i.value);
     const defenses = picked("defense").map((i) => i.value);
-    const pairwiseSalted = Boolean(
-      pairwiseSalt && pairwiseSalt.checked && defenses.includes("pairwise"),
-    );
+    const saltedDefenses = defenses.filter((defenseId) => {
+      const saltInput = root.querySelector(`[data-salt-for="${defenseId}"]`);
+      return Boolean(saltInput && saltInput.checked);
+    });
     const chips = (kind, ids) => ids.length
       ? ids.map((id) => `<span class="badge">${esc(nameOf(kind, id))}</span>`).join(" ")
       : `<span class="small muted">none</span>`;
     const selection = `<div class="card stack"><div class="row spread"><h3>${esc(c.title)} run · ${esc(c.targetLabel)}</h3></div>
       <div class="sel-row"><span class="small muted">Attack</span><div class="row">${chips("attack", attacks)}</div></div>
-      <div class="sel-row"><span class="small muted">Defence</span><div class="row">${chips("defense", defenses)}${
-        pairwiseSalted
-          ? `<span class="badge">Per-record salting enabled for Pairwise</span>`
-          : ""
-      }</div></div></div>`;
+      <div class="sel-row"><span class="small muted">Defence</span><div class="row">${chips("defense", defenses)}${saltedDefenses
+        .map(
+          (id) =>
+            `<span class="badge">Per-record salting enabled for ${esc(nameOf("defense", id))}</span>`,
+        )
+        .join(" ")}</div></div></div>`;
 
     if (defenses.length) {
       // Live defences run against the selected live attack through the shared backend endpoint.
@@ -1004,10 +1021,11 @@ function renderSecurity() {
 
             if (standardDefs.length) {
               try {
-                const options =
-                  pairwiseSalted && standardDefs.includes("pairwise")
-                    ? { pairwise: { salted: true } }
-                    : {};
+                const options = Object.fromEntries(
+                  saltedDefenses
+                    .filter((id) => standardDefs.includes(id))
+                    .map((id) => [id, { salted: true }]),
+                );
                 const data = await api("/api/security/defend", "POST", {
                   check: securityTab,
                   attack,
