@@ -337,8 +337,19 @@ const SECURITY = {
         counters: ["collusion", "adaptive"] },
       { id: "interleaved", name: "Horizontal partitioning: interleaved", desc: "Distribute alternating Bloom-filter bit positions across nodes in round-robin order.", live: true,
         counters: ["collusion", "adaptive"] },
-      { id: "pairwise", name: "Horizontal partitioning: pairwise (availability)", desc: "Store each sequential partition on two nodes so verification survives one unavailable node. Two nodes then see the whole filter, so it is weaker against collusion.", live: true,
-        counters: ["collusion", "adaptive"] },
+      {
+        id: "pairwise",
+        name: "Horizontal partitioning: pairwise (availability)",
+        desc: "Store each sequential partition on two nodes so verification survives one unavailable node. Two nodes then see the whole filter, so it is weaker against collusion.",
+        live: true,
+        counters: [
+          "collusion",
+          "pattern_mining",
+          "reference_similarity",
+          "adaptive",
+        ],
+        saltOption: true,
+      },
       { id: "salted", name: "Per-record salted hashing", desc: "Mix a random per-record salt into every keyed hash, so the same value sets different bits in different records.", live: true,
         counters: ["pattern_mining", "reference_similarity", "adaptive"] },
       { id: "salted_partitioned", name: "Salted + partitioned (combined)", desc: "Salt every record, then split each filter across the nodes. Salting stops similarity attacks; partitioning stops a key-holding coalition.", live: true,
@@ -350,9 +361,19 @@ const SECURITY = {
 let securityTab = "manipulation";
 
 function picklist(kind, items) {
-  return items.map((s) => `<label class="pick">
-      <input type="checkbox" data-kind="${kind}" value="${esc(s.id)}">
-      <span class="pick-body"><strong>${esc(s.name)}</strong><span class="small muted">${esc(s.desc)}</span></span></label>`).join("");
+  return items
+    .map((s) =>
+      s.saltOption
+        ? `<div class="pick pick-with-option">
+        <label class="pick-main"><input type="checkbox" data-kind="${kind}" value="${esc(s.id)}">
+          <span class="pick-body"><strong>${esc(s.name)}</strong><span class="small muted">${esc(s.desc)}</span></span></label>
+        <label class="pick-suboption" id="pairwise-salt-option" hidden><input type="checkbox" id="pairwise-salt">
+          <span class="pick-body"><strong>Add per-record salting</strong><span class="small muted">Checked: Salted + Pairwise. Unchecked: plain Pairwise.</span></span></label></div>`
+        : `<label class="pick">
+        <input type="checkbox" data-kind="${kind}" value="${esc(s.id)}">
+        <span class="pick-body"><strong>${esc(s.name)}</strong><span class="small muted">${esc(s.desc)}</span></span></label>`,
+    )
+    .join("");
 }
 
 const pct = (x) => `${(x * 100).toFixed(1).replace(/\.0$/, "")}%`;
@@ -828,6 +849,18 @@ function renderSecurity() {
   const paired = c.defenses.some((d) => d.counters);
   const applies = (defId, attackIds) =>
     attackIds.some((a) => ((c.defenses.find((d) => d.id === defId) || {}).counters || []).includes(a));
+  const pairwiseSaltOption = root.querySelector("#pairwise-salt-option");
+  const pairwiseSalt = root.querySelector("#pairwise-salt");
+  const syncPairwiseSalt = () => {
+    if (!pairwiseSaltOption || !pairwiseSalt) return;
+    const pairwise = root.querySelector(
+      'input[data-kind="defense"][value="pairwise"]',
+    );
+    const enabled = Boolean(pairwise && pairwise.checked && !pairwise.disabled);
+    pairwiseSaltOption.hidden = !enabled;
+    pairwiseSalt.disabled = !enabled;
+    if (!enabled) pairwiseSalt.checked = false;
+  };
   const syncDefences = () => {
     if (!paired) return;
     const a = picked("attack").map((i) => i.value);
@@ -857,8 +890,15 @@ function renderSecurity() {
         ? `${d.length} live defence${d.length === 1 ? "" : "s"} selected — ready to run.`
         : `${d.length} live defence${d.length === 1 ? "" : "s"} selected — select a live attack.`;
   };
-  root.querySelectorAll('input[type="checkbox"]').forEach((i) => { i.onchange = () => { syncDefences(); updateSummary(); }; });
+  root.querySelectorAll('input[type="checkbox"]').forEach((i) => {
+    i.onchange = () => {
+      syncDefences();
+      syncPairwiseSalt();
+      updateSummary();
+    };
+  });
   syncDefences();
+  syncPairwiseSalt();
   updateSummary();
 
   root.querySelectorAll("[data-tab]").forEach((b) => {
@@ -914,12 +954,19 @@ function renderSecurity() {
     const button = e.currentTarget;
     const attacks = picked("attack").map((i) => i.value);
     const defenses = picked("defense").map((i) => i.value);
+    const pairwiseSalted = Boolean(
+      pairwiseSalt && pairwiseSalt.checked && defenses.includes("pairwise"),
+    );
     const chips = (kind, ids) => ids.length
       ? ids.map((id) => `<span class="badge">${esc(nameOf(kind, id))}</span>`).join(" ")
       : `<span class="small muted">none</span>`;
     const selection = `<div class="card stack"><div class="row spread"><h3>${esc(c.title)} run · ${esc(c.targetLabel)}</h3></div>
       <div class="sel-row"><span class="small muted">Attack</span><div class="row">${chips("attack", attacks)}</div></div>
-      <div class="sel-row"><span class="small muted">Defence</span><div class="row">${chips("defense", defenses)}</div></div></div>`;
+      <div class="sel-row"><span class="small muted">Defence</span><div class="row">${chips("defense", defenses)}${
+        pairwiseSalted
+          ? `<span class="badge">Per-record salting enabled for Pairwise</span>`
+          : ""
+      }</div></div></div>`;
 
     if (defenses.length) {
       // Live defences run against the selected live attack through the shared backend endpoint.
@@ -957,7 +1004,16 @@ function renderSecurity() {
 
             if (standardDefs.length) {
               try {
-                const data = await api("/api/security/defend", "POST", { check: securityTab, attack, defenses: standardDefs });
+                const options =
+                  pairwiseSalted && standardDefs.includes("pairwise")
+                    ? { pairwise: { salted: true } }
+                    : {};
+                const data = await api("/api/security/defend", "POST", {
+                  check: securityTab,
+                  attack,
+                  defenses: standardDefs,
+                  options,
+                });
                 const returnedIds = new Set();
                 data.results.forEach((r) => {
                   returnedIds.add(r.defense);

@@ -14,6 +14,7 @@ record and given to the verifier, which still holds the key, so verification is 
 for genuine records. Like the partitioning defence this is a read-only experiment: the
 chain's records are re-encoded in memory and the live ledger is not modified.
 """
+
 import random
 import time
 
@@ -30,6 +31,7 @@ class SaltedEncoding:
     """Encodes records with a per-record salt (the encoding interface in attacks/inference/views.py)."""
 
     name = "per_record_salt"
+    salt_bytes = SALT_BYTES
 
     def __init__(self, impl, seed: int = SEED):
         self.impl = impl
@@ -39,7 +41,9 @@ class SaltedEncoding:
 
     def salt(self, record_id) -> str:
         if record_id not in self._salts:
-            self._salts[record_id] = self._rng.getrandbits(SALT_BYTES * 8).to_bytes(SALT_BYTES, "big").hex()
+            self._salts[record_id] = (
+                self._rng.getrandbits(SALT_BYTES * 8).to_bytes(SALT_BYTES, "big").hex()
+            )
         return self._salts[record_id]
 
     def salted(self, item: str, record_id) -> str:
@@ -85,7 +89,9 @@ def run_salted_hashing(attack: str | None = None, options: dict | None = None) -
     rng = random.Random(SEED)
 
     encode_s = baseline_encode_s = verify_s = baseline_verify_s = 0.0
-    genuine = genuine_accepted = tampered = tampered_accepted = baseline_tampered_accepted = 0
+    genuine = genuine_accepted = tampered = tampered_accepted = (
+        baseline_tampered_accepted
+    ) = 0
     for idx, anchor in ledger.anchors().items():
         tx = ledger.record(idx)
         if "bits" not in anchor or tx is None:
@@ -109,18 +115,30 @@ def run_salted_hashing(attack: str | None = None, options: dict | None = None) -
         for forged in _tampered_variants(tx):
             tampered += 1
             tampered_accepted += encoding.verify(bloom, forged, idx)
-            baseline_tampered_accepted += all(item in plain for item in record_items(forged))
+            baseline_tampered_accepted += all(
+                item in plain for item in record_items(forged)
+            )
 
-    ms = lambda seconds: round(seconds * 1000 / genuine, 3) if genuine else 0.0  # noqa: E731
+    ms = lambda seconds: (
+        round(seconds * 1000 / genuine, 3) if genuine else 0.0
+    )  # noqa: E731
     checks = genuine + tampered
     verification_accuracy = {
         "genuine_records": genuine,
         "genuine_accepted": genuine_accepted,
         "tampered_records": tampered,
         "tampered_rejected": tampered - tampered_accepted,
-        "accuracy": round((genuine_accepted + tampered - tampered_accepted) / checks, 4) if checks else None,
-        "false_rejection_rate": round((genuine - genuine_accepted) / genuine, 4) if genuine else None,
-        "false_acceptance_rate": round(tampered_accepted / tampered, 4) if tampered else None,
+        "accuracy": (
+            round((genuine_accepted + tampered - tampered_accepted) / checks, 4)
+            if checks
+            else None
+        ),
+        "false_rejection_rate": (
+            round((genuine - genuine_accepted) / genuine, 4) if genuine else None
+        ),
+        "false_acceptance_rate": (
+            round(tampered_accepted / tampered, 4) if tampered else None
+        ),
         "baseline_false_acceptance_rate": (
             round(baseline_tampered_accepted / tampered, 4) if tampered else None
         ),
@@ -141,6 +159,7 @@ def run_salted_hashing(attack: str | None = None, options: dict | None = None) -
     attack_support = None
     if attack is not None:
         from ...attacks.inference import ENCODING_RUNNERS
+
         runner = ENCODING_RUNNERS.get(attack)
         result = runner(encoding) if runner else None
         attack_support = {
@@ -151,7 +170,8 @@ def run_salted_hashing(attack: str | None = None, options: dict | None = None) -
             "interface": (
                 "The defence hands the attack its salted encoding; the attack runs on the salted "
                 "filters and is compared with the plain keyed encoding."
-                if result else f"The attack {attack!r} has no encoding runner, so it was not executed."
+                if result
+                else f"The attack {attack!r} has no encoding runner, so it was not executed."
             ),
         }
     executed = bool(attack_support and attack_support["attack_executed"])

@@ -5,6 +5,7 @@ partitioning assigns every nth bit to the same partition. In both strategies,
 each partition is stored as a single copy at one participating node and normal
 verification checks the owning partition without rebuilding the complete filter.
 """
+
 import base64
 import random
 import time
@@ -87,7 +88,9 @@ def partition_filter(
     if partition_count < 2:
         raise PartitionError("partition_count must be at least 2")
     if partition_count > bloom.m:
-        raise PartitionError("partition_count cannot exceed the Bloom-filter bit length")
+        raise PartitionError(
+            "partition_count cannot exceed the Bloom-filter bit length"
+        )
     if not nodes or any(not isinstance(node, str) or not node for node in nodes):
         raise PartitionError("at least one named node is required")
     if len(set(nodes)) != len(nodes):
@@ -112,21 +115,23 @@ def partition_filter(
         else:
             assigned_nodes = [nodes[index % len(nodes)]]
             placement, replication_factor = "single_copy", 1
-        partitions.append({
-            "record_id": record_id,
-            "partition_index": index,
-            "partition_count": partition_count,
-            "strategy": strategy,
-            "placement": placement,
-            "replication_factor": replication_factor,
-            "nodes": assigned_nodes,
-            "start_bit": start,
-            "bit_length": bit_length,
-            "position_step": step,
-            "m": bloom.m,
-            "k": bloom.k,
-            "bits": base64.b64encode(packed).decode(),
-        })
+        partitions.append(
+            {
+                "record_id": record_id,
+                "partition_index": index,
+                "partition_count": partition_count,
+                "strategy": strategy,
+                "placement": placement,
+                "replication_factor": replication_factor,
+                "nodes": assigned_nodes,
+                "start_bit": start,
+                "bit_length": bit_length,
+                "position_step": step,
+                "m": bloom.m,
+                "k": bloom.k,
+                "bits": base64.b64encode(packed).decode(),
+            }
+        )
     return partitions
 
 
@@ -145,9 +150,7 @@ def partition_anchor(
         bloom = BloomFilter.from_b64(m, k, key, encoded)
     except (KeyError, TypeError, ValueError) as exc:
         raise PartitionError("invalid Bloom-filter anchor") from exc
-    return partition_filter(
-        bloom, partition_count, nodes, record_id, strategy=strategy
-    )
+    return partition_filter(bloom, partition_count, nodes, record_id, strategy=strategy)
 
 
 def _validated_partitions(
@@ -187,17 +190,35 @@ def _validated_partitions(
         except (KeyError, TypeError, ValueError) as exc:
             raise PartitionError("partition data is invalid") from exc
         if (
-            row["partition_count"], row["m"], row["k"], row.get("record_id"),
-            row["strategy"], row["placement"], row["replication_factor"],
+            row["partition_count"],
+            row["m"],
+            row["k"],
+            row.get("record_id"),
+            row["strategy"],
+            row["placement"],
+            row["replication_factor"],
         ) != (
-            expected_count, m, k, record_id, strategy, placement, replication_factor,
+            expected_count,
+            m,
+            k,
+            record_id,
+            strategy,
+            placement,
+            replication_factor,
         ):
-            raise PartitionError("partition metadata does not describe one Bloom filter")
+            raise PartitionError(
+                "partition metadata does not describe one Bloom filter"
+            )
         if strategy not in STRATEGY_NAMES:
             raise PartitionError("unsupported partitioning strategy")
-        expected_placement = "pairwise_replication" if strategy == "pairwise" else "single_copy"
+        expected_placement = (
+            "pairwise_replication" if strategy == "pairwise" else "single_copy"
+        )
         expected_replication = 2 if strategy == "pairwise" else 1
-        if placement != expected_placement or replication_factor != expected_replication:
+        if (
+            placement != expected_placement
+            or replication_factor != expected_replication
+        ):
             raise PartitionError("partition placement does not match its strategy")
         if not isinstance(replication_factor, int) or replication_factor < 1:
             raise PartitionError("replication_factor must be a positive integer")
@@ -226,7 +247,9 @@ def _validated_partitions(
             m, expected_count, index, strategy
         )
         if (start, length, step) != (expected_start, expected_length, expected_step):
-            raise PartitionError("partition bit layout does not match its index and strategy")
+            raise PartitionError(
+                "partition bit layout does not match its index and strategy"
+            )
         decoded.append((row, raw))
 
     decoded.sort(key=lambda item: item[0]["partition_index"])
@@ -275,20 +298,27 @@ class PartitionedBloomStore:
             index = partition["partition_index"]
             for node in partition["nodes"]:
                 if node not in self.stores:
-                    raise PartitionError(f"partition is assigned to unknown node {node!r}")
+                    raise PartitionError(
+                        f"partition is assigned to unknown node {node!r}"
+                    )
                 record = self.stores[node].setdefault(record_id, {})
                 candidate = _copy_partition(partition)
                 if index in record and record[index] != candidate:
                     raise PartitionError("conflicting partition copy already exists")
                 record[index] = candidate
 
-    def partitions_for_node(self, node: str, record_id: int | str | None = None) -> list[dict]:
+    def partitions_for_node(
+        self, node: str, record_id: int | str | None = None
+    ) -> list[dict]:
         """Return only the partitions visible to one simulated node."""
         if node not in self.stores:
             raise PartitionError(f"unknown node {node!r}")
         records = self.stores[node]
         if record_id is not None:
-            return [_copy_partition(p) for _, p in sorted(records.get(record_id, {}).items())]
+            return [
+                _copy_partition(p)
+                for _, p in sorted(records.get(record_id, {}).items())
+            ]
         return [
             _copy_partition(partition)
             for rid in sorted(records, key=str)
@@ -319,11 +349,15 @@ class PartitionedBloomStore:
         rows = []
         for node in self.nodes:
             partitions = self.partitions_for_node(node)
-            rows.append({
-                "node": node,
-                "partitions": len(partitions),
-                "payload_bytes": sum((p["bit_length"] + 7) // 8 for p in partitions),
-            })
+            rows.append(
+                {
+                    "node": node,
+                    "partitions": len(partitions),
+                    "payload_bytes": sum(
+                        (p["bit_length"] + 7) // 8 for p in partitions
+                    ),
+                }
+            )
         return {
             "nodes": rows,
             "total_partitions": sum(row["partitions"] for row in rows),
@@ -344,7 +378,9 @@ def reconstruct_filter(partitions: Iterable[dict], key: bytes) -> BloomFilter:
     return BloomFilter(first["m"], first["k"], key, bytes(complete))
 
 
-def verify_items_detailed(partitions: Iterable[dict], key: bytes, items: Iterable[str]) -> dict:
+def verify_items_detailed(
+    partitions: Iterable[dict], key: bytes, items: Iterable[str]
+) -> dict:
     """Return position-level verification contributions from available partitions.
 
     Key model: the verifier holds the Bloom key and computes each item's keyed positions.
@@ -368,19 +404,21 @@ def verify_items_detailed(partitions: Iterable[dict], key: bytes, items: Iterabl
             first["m"], expected_count, index, strategy
         )
         available_row = available.get(index)
-        contributions.append({
-            "partition": index + 1,
-            "nodes": list(available_row[0]["nodes"]) if available_row else [],
-            "start_bit": start,
-            "end_bit": start + (length - 1) * step,
-            "position_step": step,
-            "available": available_row is not None,
-            "required_positions": 0,
-            "checked_positions": 0,
-            "matched_positions": 0,
-            "mismatched_positions": 0,
-            "unavailable_positions": 0,
-        })
+        contributions.append(
+            {
+                "partition": index + 1,
+                "nodes": list(available_row[0]["nodes"]) if available_row else [],
+                "start_bit": start,
+                "end_bit": start + (length - 1) * step,
+                "position_step": step,
+                "available": available_row is not None,
+                "required_positions": 0,
+                "checked_positions": 0,
+                "matched_positions": 0,
+                "mismatched_positions": 0,
+                "unavailable_positions": 0,
+            }
+        )
 
     materialized_items = list(items)
     for item in materialized_items:
@@ -389,7 +427,8 @@ def verify_items_detailed(partitions: Iterable[dict], key: bytes, items: Iterabl
                 index = position % expected_count
             else:
                 index = next(
-                    i for i, contribution in enumerate(contributions)
+                    i
+                    for i, contribution in enumerate(contributions)
                     if contribution["start_bit"] <= position <= contribution["end_bit"]
                 )
             contribution = contributions[index]
@@ -400,9 +439,9 @@ def verify_items_detailed(partitions: Iterable[dict], key: bytes, items: Iterabl
                 continue
             row, raw = available_row
             contribution["checked_positions"] += 1
-            local_position = (
-                position - row["start_bit"]
-            ) // row.get("position_step", 1)
+            local_position = (position - row["start_bit"]) // row.get(
+                "position_step", 1
+            )
             if _bit_is_set(raw, local_position):
                 contribution["matched_positions"] += 1
             else:
@@ -413,7 +452,8 @@ def verify_items_detailed(partitions: Iterable[dict], key: bytes, items: Iterabl
         required = contribution["required_positions"]
         contribution["local_match_percentage"] = (
             round(contribution["matched_positions"] * 100 / checked, 2)
-            if checked else None
+            if checked
+            else None
         )
         contribution["coverage_percentage"] = (
             round(checked * 100 / required, 2) if required else 100.0
@@ -448,7 +488,9 @@ def verify_items_detailed(partitions: Iterable[dict], key: bytes, items: Iterabl
         "mismatched_positions": mismatched,
         "unavailable_positions": unavailable,
         "match_percentage": round(matched * 100 / checked, 2) if checked else None,
-        "coverage_percentage": round(checked * 100 / total_required, 2) if total_required else 100.0,
+        "coverage_percentage": (
+            round(checked * 100 / total_required, 2) if total_required else 100.0
+        ),
         "contributions": contributions,
     }
 
@@ -475,7 +517,9 @@ def _verification_traffic(verification: dict, partitions: Iterable[dict]) -> int
     for contribution in verification["contributions"]:
         checked = contribution["checked_positions"]
         if checked:
-            index_bytes = (max(lengths[contribution["partition"]] - 1, 1).bit_length() + 7) // 8
+            index_bytes = (
+                max(lengths[contribution["partition"]] - 1, 1).bit_length() + 7
+            ) // 8
             total += checked * index_bytes + (checked + 7) // 8
     return total
 
@@ -535,7 +579,9 @@ def _run_partitioning(
 
     def items_of(tx: dict, block_id) -> list[str]:
         items = record_items(tx)
-        return [encoding.salted(item, block_id) for item in items] if encoding else items
+        return (
+            [encoding.salted(item, block_id) for item in items] if encoding else items
+        )
 
     for block_id, anchor in anchors.items():
         if not {"m", "k", "bits"} <= anchor.keys():
@@ -544,8 +590,11 @@ def _run_partitioning(
             tx = ledger.record(block_id)
             if tx is None:
                 continue
-            anchor = {"m": anchor_impl.M, "k": anchor_impl.K,
-                      "bits": encoding.filter(tx, block_id, encode_rng).to_b64()}
+            anchor = {
+                "m": anchor_impl.M,
+                "k": anchor_impl.K,
+                "bits": encoding.filter(tx, block_id, encode_rng).to_b64(),
+            }
         started = time.perf_counter()
         partitions = partition_anchor(
             anchor,
@@ -564,18 +613,21 @@ def _run_partitioning(
                 length = partition["bit_length"]
                 step = partition.get("position_step", 1)
                 end = start + (length - 1) * step
-                assignments.append({
-                    "partition": partition["partition_index"] + 1,
-                    "start_bit": start,
-                    "end_bit": end,
-                    "position_step": step,
-                    "position_rule": (
-                        f"{start}-{end}" if step == 1
-                        else f"{start}, {start + step}, ... {end}"
-                    ),
-                    "bit_length": length,
-                    "nodes": partition["nodes"],
-                })
+                assignments.append(
+                    {
+                        "partition": partition["partition_index"] + 1,
+                        "start_bit": start,
+                        "end_bit": end,
+                        "position_step": step,
+                        "position_rule": (
+                            f"{start}-{end}"
+                            if step == 1
+                            else f"{start}, {start + step}, ... {end}"
+                        ),
+                        "bit_length": length,
+                        "nodes": partition["nodes"],
+                    }
+                )
         tx = ledger.record(block_id)
         if tx is None:
             continue
@@ -587,7 +639,9 @@ def _run_partitioning(
         verification_seconds += time.perf_counter() - started
         verification_results.append(verification)
         communication_bytes += _verification_traffic(verification, stored)
-        baseline = BloomFilter.from_b64(anchor["m"], anchor["k"], anchor_impl.key, anchor["bits"])
+        baseline = BloomFilter.from_b64(
+            anchor["m"], anchor["k"], anchor_impl.key, anchor["bits"]
+        )
         started = time.perf_counter()
         baseline_verified = all(item in baseline for item in items)
         baseline_seconds += time.perf_counter() - started
@@ -595,31 +649,41 @@ def _run_partitioning(
         for forged in _tampered_variants(tx):
             forged_items = items_of(forged, block_id)
             tampered_checks += 1
-            tampered_accepted += verify_items_detailed(stored, anchor_impl.key, forged_items)["verified"]
+            tampered_accepted += verify_items_detailed(
+                stored, anchor_impl.key, forged_items
+            )["verified"]
             baseline_tampered_accepted += all(item in baseline for item in forged_items)
         reconstructed = reconstruct_filter(stored, anchor_impl.key)
-        rows.append({
-            "block": block_id,
-            "reconstructed": reconstructed.to_b64() == anchor["bits"],
-            "verified": verification["verified"],
-            "verification_status": verification["status"],
-            "match_percentage": verification["match_percentage"],
-            "coverage_percentage": verification["coverage_percentage"],
-            "baseline_verified": baseline_verified,
-            "matches_baseline": verification["verified"] == baseline_verified,
-            "contributions": verification["contributions"],
-            "assignments": [p["nodes"] for p in stored],
-        })
+        rows.append(
+            {
+                "block": block_id,
+                "reconstructed": reconstructed.to_b64() == anchor["bits"],
+                "verified": verification["verified"],
+                "verification_status": verification["status"],
+                "match_percentage": verification["match_percentage"],
+                "coverage_percentage": verification["coverage_percentage"],
+                "baseline_verified": baseline_verified,
+                "matches_baseline": verification["verified"] == baseline_verified,
+                "contributions": verification["contributions"],
+                "assignments": [p["nodes"] for p in stored],
+            }
+        )
 
     availability = []
     for offline in (None, *NODES):
-        active = list(NODES) if offline is None else [node for node in NODES if node != offline]
+        active = (
+            list(NODES)
+            if offline is None
+            else [node for node in NODES if node != offline]
+        )
         verified_records = not_matched_records = unavailable_records = 0
         total_required = checked = matched = mismatched = unavailable_positions = 0
         available_filter_bits = 0
         for block_id, tx in records.items():
             visible = store.partitions_for_record(block_id, active)
-            result = verify_items_detailed(visible, anchor_impl.key, items_of(tx, block_id))
+            result = verify_items_detailed(
+                visible, anchor_impl.key, items_of(tx, block_id)
+            )
             total_required += result["total_required_positions"]
             checked += result["checked_positions"]
             matched += result["matched_positions"]
@@ -632,32 +696,44 @@ def _run_partitioning(
             else:
                 unavailable_records += 1
             if available_filter_bits == 0:
-                available_filter_bits = sum(partition["bit_length"] for partition in visible)
-        availability.append({
-            "scenario": "all_nodes_online" if offline is None else "node_offline",
-            "offline_nodes": [] if offline is None else [offline],
-            "available_nodes": active,
-            "verified_records": verified_records,
-            "not_matched_records": not_matched_records,
-            "unavailable_records": unavailable_records,
-            "total_required_positions": total_required,
-            "checked_positions": checked,
-            "matched_positions": matched,
-            "mismatched_positions": mismatched,
-            "unavailable_positions": unavailable_positions,
-            "match_percentage": round(matched * 100 / checked, 2) if checked else None,
-            "verification_coverage_percentage": (
-                round(checked * 100 / total_required, 2) if total_required else 100.0
-            ),
-            "available_filter_bits": available_filter_bits,
-            "available_filter_percentage": round(
-                available_filter_bits * 100 / anchor_impl.M, 2
-            ),
-            "status": "available" if unavailable_records == 0 else "inconclusive",
-        })
+                available_filter_bits = sum(
+                    partition["bit_length"] for partition in visible
+                )
+        availability.append(
+            {
+                "scenario": "all_nodes_online" if offline is None else "node_offline",
+                "offline_nodes": [] if offline is None else [offline],
+                "available_nodes": active,
+                "verified_records": verified_records,
+                "not_matched_records": not_matched_records,
+                "unavailable_records": unavailable_records,
+                "total_required_positions": total_required,
+                "checked_positions": checked,
+                "matched_positions": matched,
+                "mismatched_positions": mismatched,
+                "unavailable_positions": unavailable_positions,
+                "match_percentage": (
+                    round(matched * 100 / checked, 2) if checked else None
+                ),
+                "verification_coverage_percentage": (
+                    round(checked * 100 / total_required, 2)
+                    if total_required
+                    else 100.0
+                ),
+                "available_filter_bits": available_filter_bits,
+                "available_filter_percentage": round(
+                    available_filter_bits * 100 / anchor_impl.M, 2
+                ),
+                "status": "available" if unavailable_records == 0 else "inconclusive",
+            }
+        )
 
     storage = store.storage_profile()
-    bytes_per_record = round(storage["total_payload_bytes"] / len(records)) if records else 0
+    bytes_per_record = (
+        round(storage["total_payload_bytes"] / len(records)) if records else 0
+    )
+    if encoding is not None:
+        bytes_per_record += encoding.salt_bytes
     placement = "pairwise_replication" if strategy == "pairwise" else "single_copy"
     replication_factor = 2 if strategy == "pairwise" else 1
     exposure_by_node = {
@@ -669,41 +745,52 @@ def _run_partitioning(
         for node in NODES
     }
     maximum_node_bits = max(exposure_by_node.values(), default=0)
-    total_required = sum(row["total_required_positions"] for row in verification_results)
+    total_required = sum(
+        row["total_required_positions"] for row in verification_results
+    )
     overall_checked = sum(row["checked_positions"] for row in verification_results)
     overall_matched = sum(row["matched_positions"] for row in verification_results)
-    overall_mismatched = sum(row["mismatched_positions"] for row in verification_results)
-    unavailable_positions = sum(row["unavailable_positions"] for row in verification_results)
+    overall_mismatched = sum(
+        row["mismatched_positions"] for row in verification_results
+    )
+    unavailable_positions = sum(
+        row["unavailable_positions"] for row in verification_results
+    )
     contribution_totals = []
     for assignment in assignments:
         partition = assignment["partition"]
         source_rows = [
-            result["contributions"][partition - 1]
-            for result in verification_results
+            result["contributions"][partition - 1] for result in verification_results
         ]
         required = sum(row["required_positions"] for row in source_rows)
         checked = sum(row["checked_positions"] for row in source_rows)
         matched = sum(row["matched_positions"] for row in source_rows)
         mismatched = sum(row["mismatched_positions"] for row in source_rows)
-        contribution_totals.append({
-            "partition": partition,
-            "nodes": assignment["nodes"],
-            "required_positions": required,
-            "checked_positions": checked,
-            "matched_positions": matched,
-            "mismatched_positions": mismatched,
-            "local_match_percentage": round(matched * 100 / checked, 2) if checked else None,
-            "coverage_percentage": round(checked * 100 / required, 2) if required else 100.0,
-            "position_share_percentage": (
-                round(required * 100 / total_required, 2) if total_required else 0.0
-            ),
-            "status": "not_matched" if mismatched else "matched",
-        })
+        contribution_totals.append(
+            {
+                "partition": partition,
+                "nodes": assignment["nodes"],
+                "required_positions": required,
+                "checked_positions": checked,
+                "matched_positions": matched,
+                "mismatched_positions": mismatched,
+                "local_match_percentage": (
+                    round(matched * 100 / checked, 2) if checked else None
+                ),
+                "coverage_percentage": (
+                    round(checked * 100 / required, 2) if required else 100.0
+                ),
+                "position_share_percentage": (
+                    round(required * 100 / total_required, 2) if total_required else 0.0
+                ),
+                "status": "not_matched" if mismatched else "matched",
+            }
+        )
     verification_summary = {
         "status": (
-            "not_matched" if overall_mismatched else
-            "inconclusive" if unavailable_positions else
-            "verified"
+            "not_matched"
+            if overall_mismatched
+            else "inconclusive" if unavailable_positions else "verified"
         ),
         "total_required_positions": total_required,
         "checked_positions": overall_checked,
@@ -711,14 +798,19 @@ def _run_partitioning(
         "mismatched_positions": overall_mismatched,
         "unavailable_positions": unavailable_positions,
         "match_percentage": (
-            round(overall_matched * 100 / overall_checked, 2) if overall_checked else None
+            round(overall_matched * 100 / overall_checked, 2)
+            if overall_checked
+            else None
         ),
         "coverage_percentage": (
-            round(overall_checked * 100 / total_required, 2) if total_required else 100.0
+            round(overall_checked * 100 / total_required, 2)
+            if total_required
+            else 100.0
         ),
         "contributions": contribution_totals,
         "baseline_records_compared": len(rows),
-        "baseline_agreement": bool(rows) and all(row["matches_baseline"] for row in rows),
+        "baseline_agreement": bool(rows)
+        and all(row["matches_baseline"] for row in rows),
     }
     genuine = len(rows)
     genuine_accepted = sum(row["verified"] for row in rows)
@@ -729,13 +821,21 @@ def _run_partitioning(
         "genuine_accepted": genuine_accepted,
         "tampered_records": tampered_checks,
         "tampered_rejected": tampered_rejected,
-        "accuracy": round((genuine_accepted + tampered_rejected) / checks, 4) if checks else None,
-        "false_rejection_rate": round((genuine - genuine_accepted) / genuine, 4) if genuine else None,
+        "accuracy": (
+            round((genuine_accepted + tampered_rejected) / checks, 4)
+            if checks
+            else None
+        ),
+        "false_rejection_rate": (
+            round((genuine - genuine_accepted) / genuine, 4) if genuine else None
+        ),
         "false_acceptance_rate": (
             round(tampered_accepted / tampered_checks, 4) if tampered_checks else None
         ),
         "baseline_false_acceptance_rate": (
-            round(baseline_tampered_accepted / tampered_checks, 4) if tampered_checks else None
+            round(baseline_tampered_accepted / tampered_checks, 4)
+            if tampered_checks
+            else None
         ),
     }
     attack_support = None
@@ -743,24 +843,35 @@ def _run_partitioning(
         partition_views = []
         view_masks = []
         for node in NODES:
-            visible = [assignment for assignment in assignments if node in assignment["nodes"]]
+            visible = [
+                assignment for assignment in assignments if node in assignment["nodes"]
+            ]
             visible_bits = sum(assignment["bit_length"] for assignment in visible)
-            partition_views.append({
-                "node": node,
-                "partition": visible[0]["partition"] if len(visible) == 1 else None,
-                "partitions": [assignment["partition"] for assignment in visible],
-                "visible_bits": visible_bits,
-                "visibility_percentage": round(visible_bits * 100 / anchor_impl.M, 2),
-                "position_rule": "; ".join(
-                    f'P{assignment["partition"]}: {assignment["position_rule"]}'
-                    for assignment in visible
-                ),
-            })
+            partition_views.append(
+                {
+                    "node": node,
+                    "partition": visible[0]["partition"] if len(visible) == 1 else None,
+                    "partitions": [assignment["partition"] for assignment in visible],
+                    "visible_bits": visible_bits,
+                    "visibility_percentage": round(
+                        visible_bits * 100 / anchor_impl.M, 2
+                    ),
+                    "position_rule": "; ".join(
+                        f'P{assignment["partition"]}: {assignment["position_rule"]}'
+                        for assignment in visible
+                    ),
+                }
+            )
             view_masks.append({"node": node, "mask": _assignment_mask(visible)})
         # The attack component runs its own logic on exactly the bits each node holds.
         from ...attacks.inference import VIEW_RUNNERS
+
         view_runner = VIEW_RUNNERS.get(attack)
-        attack_result = view_runner(view_masks, encoding=encoding) if view_runner and view_masks else None
+        attack_result = (
+            view_runner(view_masks, encoding=encoding)
+            if view_runner and view_masks
+            else None
+        )
         attack_support = {
             "status": "executed" if attack_result else "unsupported_attack",
             "requested_attack": attack,
@@ -776,19 +887,25 @@ def _run_partitioning(
                 "The defence passes each node's partition view to the attack component, "
                 "which runs on the visible Bloom positions only and is compared with the "
                 "complete-filter baseline."
-                if attack_result else
-                f"The attack {attack!r} has no partition-view runner, so it was not executed."
+                if attack_result
+                else f"The attack {attack!r} has no partition-view runner, so it was not executed."
             ),
         }
     attack_executed = bool(attack_support and attack_support["attack_executed"])
-    average_ms = round(verification_seconds * 1000 / len(records), 3) if records else 0.0
+    average_ms = (
+        round(verification_seconds * 1000 / len(records), 3) if records else 0.0
+    )
     baseline_ms = round(baseline_seconds * 1000 / len(records), 3) if records else 0.0
     return {
         "check": "inference",
         "defense": "horizontal_partitioning",
         "system": "bloom",
         "strategy": strategy,
-        "strategy_name": (f"Salted + {STRATEGY_NAMES[strategy]}" if encoding else STRATEGY_NAMES[strategy]),
+        "strategy_name": (
+            f"Salted + {STRATEGY_NAMES[strategy]}"
+            if encoding
+            else STRATEGY_NAMES[strategy]
+        ),
         "salted": encoding is not None,
         "attack": attack,
         "attack_supported": attack_executed,
@@ -817,9 +934,7 @@ def _run_partitioning(
         },
         "all_reconstructed": bool(rows) and all(row["reconstructed"] for row in rows),
         "all_verified": bool(rows) and all(row["verified"] for row in rows),
-        "max_node_exposure_percent": round(
-            maximum_node_bits * 100 / anchor_impl.M, 2
-        ),
+        "max_node_exposure_percent": round(maximum_node_bits * 100 / anchor_impl.M, 2),
         "rows": rows,
         "conclusion": (
             f"The Horizontal Partitioning defence used {STRATEGY_NAMES[strategy]} to "
@@ -828,8 +943,11 @@ def _run_partitioning(
             f"{replication_factor}. "
             "Partition-aware verification matched the complete-filter baseline without giving "
             "one node the entire bit array."
-            + (" Every record was first salted, so the same value sets different bits in different records."
-               if encoding else "")
+            + (
+                " Every record was first salted, so the same value sets different bits in different records."
+                if encoding
+                else ""
+            )
         ),
     }
 
@@ -854,8 +972,18 @@ def run_pairwise_partitioning(
     attack: str | None = None,
     options: dict | None = None,
 ) -> dict:
-    """Evaluate sequential ranges with pairwise partition replication."""
-    return _run_partitioning("pairwise", attack, options)
+    """Evaluate pairwise replication, optionally after per-record salting."""
+    if options is not None and not isinstance(options, dict):
+        raise PartitionError("defence options must be an object")
+    salted = (options or {}).get("salted", False)
+    if not isinstance(salted, bool):
+        raise PartitionError("pairwise salted option must be a boolean")
+    encoding = None
+    if salted:
+        from .salting import SaltedEncoding
+
+        encoding = SaltedEncoding(systems()["bloom"].config["anchor"])
+    return _run_partitioning("pairwise", attack, options, encoding)
 
 
 def run_salted_partitioning(
@@ -868,7 +996,13 @@ def run_salted_partitioning(
     keeps a key-holding coalition from seeing all of a guess's positions.
     """
     from .salting import SaltedEncoding
-    return _run_partitioning("sequential", attack, options, SaltedEncoding(systems()["bloom"].config["anchor"]))
+
+    return _run_partitioning(
+        "sequential",
+        attack,
+        options,
+        SaltedEncoding(systems()["bloom"].config["anchor"]),
+    )
 
 
 # Backward-compatible name for code written before the strategy was named SBP.

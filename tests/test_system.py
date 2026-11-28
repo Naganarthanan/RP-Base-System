@@ -520,6 +520,36 @@ def test_pairwise_partitioning_defence_endpoint(site):
                for row in data["availability"])
 
 
+def test_pairwise_partitioning_optionally_applies_per_record_salting(site):
+    response = site.test_client().post("/api/security/defend", json={
+        "check": "inference",
+        "attack": "pattern_mining",
+        "defenses": ["pairwise"],
+        "options": {"pairwise": {"salted": True}},
+    })
+    assert response.status_code == 200
+    data = response.get_json()["results"][0]
+
+    assert data["strategy"] == "pairwise" and data["salted"] is True
+    assert data["strategy_name"] == "Salted + Sequential Bit Partitioning with Pairwise Replication"
+    assert data["placement"] == "pairwise_replication" and data["replication_factor"] == 2
+    assert data["all_reconstructed"] is True and data["all_verified"] is True
+    assert data["verification_accuracy"]["accuracy"] == 1
+    assert data["attack_executed"] is True
+    assert data["metrics"]["storage_bytes_per_record"] == 1026 + 16
+
+
+def test_pairwise_salted_option_must_be_boolean(site):
+    response = site.test_client().post("/api/security/defend", json={
+        "check": "inference",
+        "attack": "collusion",
+        "defenses": ["pairwise"],
+        "options": {"pairwise": {"salted": "yes"}},
+    })
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "pairwise salted option must be a boolean"
+
+
 @pytest.mark.parametrize(("defense", "attack"), [
     ("sequential", "collusion"),
     ("interleaved", "pattern_mining"),
