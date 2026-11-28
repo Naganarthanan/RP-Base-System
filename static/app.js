@@ -313,9 +313,9 @@ const SECURITY = {
       { id: "single_sequence", name: "Single-sequence partitioning", desc: "Block i goes to node ((i-1) mod n)+1, cycling in order.", live: true },
       { id: "single_odd", name: "Single-odd partitioning", desc: "Blocks follow an odd-numbered node order." },
       { id: "k_sequence", name: "k-sequence partitioning", desc: "Each block is replicated on k nodes in sequence." },
-      { id: "forensic", name: "OCR / forensic asset check", desc: "Verify the logo, seal and signature images." },
-      { id: "consensus", name: "Consensus threshold", desc: "Require more nodes to agree before accepting." },
-      { id: "keyed", name: "Keyed anchor (HMAC)", desc: "Sign each anchor with a secret key." },
+      // { id: "forensic", name: "OCR / forensic asset check", desc: "Verify the logo, seal and signature images." },
+      // { id: "consensus", name: "Consensus threshold", desc: "Require more nodes to agree before accepting." },
+      // { id: "keyed", name: "Keyed anchor (HMAC)", desc: "Sign each anchor with a secret key." },
     ],
   },
   inference: {
