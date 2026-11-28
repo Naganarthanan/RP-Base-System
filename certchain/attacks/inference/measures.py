@@ -65,12 +65,13 @@ def attach_view_measures(result: dict, chance: float = 0.0) -> dict:
     """Add a measure block to every row of a run_on_views result, against its baseline.
 
     The headline `security` block is the worst row (highest ASR): a defence is only as
-    strong as the node or coalition that gets furthest.
+    strong as the node or coalition that gets furthest. A row's `attack_ms`, when the
+    attack timed it, becomes that row's attack time.
     """
     base = result["baseline"]["success_rate"]
-    result["baseline"]["security"] = measures(base, chance)
+    result["baseline"]["security"] = measures(base, chance, attack_ms=result["baseline"].get("attack_ms"))
     for row in result["rows"]:
-        row["security"] = measures(row["success_rate"], chance, base)
+        row["security"] = measures(row["success_rate"], chance, base, row.get("attack_ms"))
     worst = max(result["rows"], key=lambda r: r["success_rate"])
     result["security"] = {**worst["security"], "worst_attacker": worst["label"]}
     return result
