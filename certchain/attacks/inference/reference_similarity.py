@@ -28,6 +28,8 @@ import random
 
 from ...anchors import record_items
 from ..common import field_item, systems
+from .measures import attach_view_measures, measures, timer
+from .views import check_views, full_mask, row
 
 CLASSES = {
     "IT": "BSc (Hons) Information Technology",
@@ -170,36 +172,59 @@ def evaluate(predicted: list[str], actual: list[str], labels: list[str]) -> dict
 
 # Experiment runner -----------------------------------------------------------------
 
-def run_experiment(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS,
-                   partitions=PARTITIONS, position: int = FRAGMENT_POSITION) -> dict:
+def prepare(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS):
+    """Stages 1-3: build, encode and split the synthetic records (seeded, repeatable)."""
     rng = random.Random(seed)
     records = synthetic_records(rng, per_class)
     for r in records:
         r["bits"] = encode(impl, r["tx"], rng)
     references, targets = split(records, rng)
+    return records, references, targets
+
+
+def attack_view(references, targets, view, length: int) -> tuple[list[dict], dict]:
+    """Stages 5-8 on one observation: `view(bits)` returns only what the attacker sees.
+
+    The engine gets labelled references and unlabelled targets; ground truth is looked
+    up only after every prediction is made.
+    """
+    if length <= 0:
+        raise ValueError("the attacker must observe at least one bit")
+    labels = list(CLASSES)
+    ground_truth = {t["id"]: t["label"] for t in targets}
+    known = [(view(r["bits"]), r["label"]) for r in references]
+    unknown = [(t["id"], view(t["bits"])) for t in targets]  # no labels
+
+    results = []
+    for target_id, fragment in unknown:
+        scores = class_scores(fragment, known, length)
+        results.append({"target_id": target_id, "scores": scores, "predicted": predict(scores)})
+
+    for r in results:
+        r["ground_truth"] = ground_truth[r["target_id"]]
+        r["correct"] = r["predicted"] == r["ground_truth"]
+    metrics = evaluate([r["predicted"] for r in results], [r["ground_truth"] for r in results], labels)
+    return results, metrics
+
+
+def run_experiment(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS,
+                   partitions=PARTITIONS, position: int = FRAGMENT_POSITION) -> dict:
+    records, references, targets = prepare(impl, seed, per_class)
     labels = list(CLASSES)
     m = impl.M
 
-    # Ground truth is kept apart from what the attacker receives.
-    ground_truth = {t["id"]: t["label"] for t in targets}
-
     experiments = []
+    chance = 1 / len(labels)
     for n in partitions:
         start, end = fragment_bounds(m, n, position)
         length = end - start
-        known = [(observe(r["bits"], start, end), r["label"]) for r in references]
-        unknown = [(t["id"], observe(t["bits"], start, end)) for t in targets]  # no labels
-
-        results = []
-        for target_id, fragment in unknown:
-            scores = class_scores(fragment, known, length)
-            results.append({"target_id": target_id, "scores": scores, "predicted": predict(scores)})
-
-        # Evaluation: ground truth is looked up only after every prediction is made.
-        for r in results:
-            r["ground_truth"] = ground_truth[r["target_id"]]
-            r["correct"] = r["predicted"] == r["ground_truth"]
-        metrics = evaluate([r["predicted"] for r in results], [r["ground_truth"] for r in results], labels)
+        with timer() as elapsed:
+            results, metrics = attack_view(
+                references, targets, lambda bits, s=start, e=end: observe(bits, s, e), length)
+        # Risk reduction is measured against the first (largest-visibility) configuration.
+        baseline_asr = experiments[0]["accuracy"] if experiments else None
+        security = measures(metrics["accuracy"], chance, baseline_asr, elapsed(),
+                            macro_f1=metrics["macro_f1"])
 
         # Evaluation-side diagnostic (uses the key, never given to the attacker): how many of
         # each programme's k Bloom bits fall inside the observed fragment. A class with 0 bits
@@ -217,6 +242,7 @@ def run_experiment(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS,
             "visibility_ratio": round(length / m, 4),
             "programme_bits_in_fragment": signal,
             **metrics,
+            "security": security,
             "sample_results": [{
                 "target_id": r["target_id"],
                 "scores": {k: round(v, 3) for k, v in r["scores"].items()},
@@ -241,9 +267,53 @@ def run_experiment(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS,
             "aggregation": "mean per class",
             "seed": seed,
         },
-        "chance_accuracy": round(1 / len(labels), 4),
+        "chance_accuracy": round(chance, 4),
         "experiments": experiments,
+        # Headline: the least-protected configuration (the full filter when E1 is run).
+        "security": dict(experiments[0]["security"]) if experiments else None,
     }
+
+
+def run_on_views(views, seed: int = SEED, per_class: int = RECORDS_PER_CLASS) -> dict:
+    """Run the attack once per defence-supplied node view (see views.py).
+
+    Each node's attacker compares only the Bloom positions its view exposes. The full
+    filter is run as the no-defence baseline, with the same records and seed.
+    """
+    impl = systems()["bloom"].config["anchor"]
+    m = impl.M
+    views = check_views(views, m)
+    _, references, targets = prepare(impl, seed, per_class)
+    chance = 1 / len(CLASSES)
+
+    def measure(label, nodes, mask):
+        _, metrics = attack_view(references, targets, lambda bits: bits & mask, mask.bit_count())
+        return row(label, nodes, mask, m, metrics["accuracy"],
+                   f"Accuracy {metrics['accuracy']:.0%}, macro F1 {metrics['macro_f1']:.2f} "
+                   f"({metrics['correct']} of {metrics['total']} targets)",
+                   accuracy=metrics["accuracy"], macro_f1=metrics["macro_f1"])
+
+    baseline = measure("Complete Bloom filter (no defence)", [], full_mask(m))
+    rows = [measure(v["node"], [v["node"]], v["mask"]) for v in views]
+    worst = max(rows, key=lambda r: r["success_rate"])
+    result = {
+        "attack": "reference_similarity",
+        "metric": "Programme inference accuracy",
+        "chance": round(chance, 4),
+        "baseline": baseline,
+        "rows": rows,
+        "conclusion": (
+            f"With the complete filter the attack inferred the programme for "
+            f"{baseline['success_rate']:.0%} of targets. Under this partitioning the best single "
+            f"node ({worst['label']}, {worst['visibility_percentage']}% of bits) reached "
+            f"{worst['success_rate']:.0%}, against {chance:.0%} for a random guess."
+        ),
+    }
+    attach_view_measures(result, chance)
+    for r in [baseline, *rows]:
+        r["security"]["macro_f1"] = r["macro_f1"]
+    result["security"]["macro_f1"] = worst["macro_f1"]
+    return result
 
 
 def run_inference_reference_similarity() -> dict:

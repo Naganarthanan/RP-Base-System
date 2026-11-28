@@ -457,6 +457,16 @@ def verify_items(partitions: Iterable[dict], key: bytes, items: Iterable[str]) -
     return result["verified"]
 
 
+def _assignment_mask(assignments: Iterable[dict]) -> int:
+    """Bloom positions covered by partition assignments, as an int mask (bit p = position p)."""
+    mask = 0
+    for assignment in assignments:
+        start, step = assignment["start_bit"], assignment["position_step"]
+        for local_position in range(assignment["bit_length"]):
+            mask |= 1 << (start + local_position * step)
+    return mask
+
+
 def _run_partitioning(
     strategy: str,
     attack: str | None = None,
@@ -653,6 +663,7 @@ def _run_partitioning(
     attack_support = None
     if attack is not None:
         partition_views = []
+        view_masks = []
         for node in NODES:
             visible = [assignment for assignment in assignments if node in assignment["nodes"]]
             visible_bits = sum(assignment["bit_length"] for assignment in visible)
@@ -667,21 +678,31 @@ def _run_partitioning(
                     for assignment in visible
                 ),
             })
+            view_masks.append({"node": node, "mask": _assignment_mask(visible)})
+        # The attack component runs its own logic on exactly the bits each node holds.
+        from ...attacks.inference import VIEW_RUNNERS
+        view_runner = VIEW_RUNNERS.get(attack)
+        attack_result = view_runner(view_masks) if view_runner and view_masks else None
         attack_support = {
-            "status": "ready_for_attacker_component",
+            "status": "executed" if attack_result else "unsupported_attack",
             "requested_attack": attack,
-            "attack_executed": False,
+            "attack_executed": attack_result is not None,
             "baseline": {
                 "representation": "complete_bloom_filter",
                 "visibility_percentage": 100.0,
                 "records": len(rows),
             },
             "partition_views": partition_views,
+            "result": attack_result,
             "interface": (
-                "The defence prepares per-node partition views. The attacker component "
-                "must consume the selected view and return its own attack measurements."
+                "The defence passes each node's partition view to the attack component, "
+                "which runs on the visible Bloom positions only and is compared with the "
+                "complete-filter baseline."
+                if attack_result else
+                f"The attack {attack!r} has no partition-view runner, so it was not executed."
             ),
         }
+    attack_executed = bool(attack_support and attack_support["attack_executed"])
     return {
         "check": "inference",
         "defense": "horizontal_partitioning",
@@ -689,8 +710,8 @@ def _run_partitioning(
         "strategy": strategy,
         "strategy_name": STRATEGY_NAMES[strategy],
         "attack": attack,
-        "attack_supported": attack_support is not None,
-        "attack_executed": False,
+        "attack_supported": attack_executed,
+        "attack_executed": attack_executed,
         "attack_support": attack_support,
         "placement": placement,
         "replication_factor": replication_factor,
