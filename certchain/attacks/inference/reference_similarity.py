@@ -172,12 +172,19 @@ def evaluate(predicted: list[str], actual: list[str], labels: list[str]) -> dict
 
 # Experiment runner -----------------------------------------------------------------
 
-def prepare(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS):
-    """Stages 1-3: build, encode and split the synthetic records (seeded, repeatable)."""
+def prepare(impl, seed: int = SEED, per_class: int = RECORDS_PER_CLASS, encoder=None):
+    """Stages 1-3: build, encode and split the synthetic records (seeded, repeatable).
+
+    `encoder(tx, record_id, rng)`, when a defence supplies one, replaces the plain
+    encoding. Encoding draws from its own seeded generator, so the records and the
+    reference/target split are identical whichever encoder is used.
+    """
     rng = random.Random(seed)
     records = synthetic_records(rng, per_class)
+    encode_rng = random.Random(seed + 1)
     for r in records:
-        r["bits"] = encode(impl, r["tx"], rng)
+        r["bits"] = (encoder(r["tx"], r["id"], encode_rng) if encoder
+                     else encode(impl, r["tx"], encode_rng))
     references, targets = split(records, rng)
     return records, references, targets
 
@@ -287,11 +294,13 @@ def run_on_views(views, seed: int = SEED, per_class: int = RECORDS_PER_CLASS) ->
     chance = 1 / len(CLASSES)
 
     def measure(label, nodes, mask):
-        _, metrics = attack_view(references, targets, lambda bits: bits & mask, mask.bit_count())
+        with timer() as elapsed:
+            _, metrics = attack_view(references, targets, lambda bits: bits & mask, mask.bit_count())
         return row(label, nodes, mask, m, metrics["accuracy"],
                    f"Accuracy {metrics['accuracy']:.0%}, macro F1 {metrics['macro_f1']:.2f} "
                    f"({metrics['correct']} of {metrics['total']} targets)",
-                   accuracy=metrics["accuracy"], macro_f1=metrics["macro_f1"])
+                   accuracy=metrics["accuracy"], macro_f1=metrics["macro_f1"],
+                   attack_ms=round(elapsed(), 1))
 
     baseline = measure("Complete Bloom filter (no defence)", [], full_mask(m))
     rows = [measure(v["node"], [v["node"]], v["mask"]) for v in views]
@@ -306,13 +315,61 @@ def run_on_views(views, seed: int = SEED, per_class: int = RECORDS_PER_CLASS) ->
             f"With the complete filter the attack inferred the programme for "
             f"{baseline['success_rate']:.0%} of targets. Under this partitioning the best single "
             f"node ({worst['label']}, {worst['visibility_percentage']}% of bits) reached "
-            f"{worst['success_rate']:.0%}, against {chance:.0%} for a random guess."
+            f"{worst['success_rate']:.0%}, against {chance:.0%} for a random guess. Measured on "
+            f"{len(targets)} synthetic target records ({len(references)} labelled references), "
+            f"not the chain's blocks, because the attack needs records whose programme is known."
         ),
+        "data_source": "synthetic",
+        "reference_records": len(references),
+        "target_records": len(targets),
     }
     attach_view_measures(result, chance)
     for r in [baseline, *rows]:
         r["security"]["macro_f1"] = r["macro_f1"]
     result["security"]["macro_f1"] = worst["macro_f1"]
+    return result
+
+
+def run_on_encoding(encoding, seed: int = SEED, per_class: int = RECORDS_PER_CLASS) -> dict:
+    """Run the attack on records encoded by a defence (see views.py), against the plain encoding.
+
+    The same synthetic records and the same reference/target split are used for both, so
+    the encoding is the only thing that changes.
+    """
+    impl = systems()["bloom"].config["anchor"]
+    m = impl.M
+    chance = 1 / len(CLASSES)
+
+    def measure(label, encoder):
+        _, references, targets = prepare(impl, seed, per_class, encoder)
+        with timer() as elapsed:
+            _, metrics = attack_view(references, targets, lambda bits: bits, m)
+        return row(label, [], full_mask(m), m, metrics["accuracy"],
+                   f"Accuracy {metrics['accuracy']:.0%}, macro F1 {metrics['macro_f1']:.2f} "
+                   f"({metrics['correct']} of {metrics['total']} targets)",
+                   accuracy=metrics["accuracy"], macro_f1=metrics["macro_f1"],
+                   attack_ms=round(elapsed(), 1))
+
+    baseline = measure("Plain keyed encoding (no defence)", None)
+    defended = measure("Defence encoding", encoding.encode)
+    result = {
+        "attack": "reference_similarity",
+        "metric": "Programme inference accuracy",
+        "chance": round(chance, 4),
+        "baseline": baseline,
+        "rows": [defended],
+        "conclusion": (
+            f"With the plain encoding the attack inferred the programme for {baseline['success_rate']:.0%} "
+            f"of targets; under the defence encoding it reached {defended['success_rate']:.0%}, against "
+            f"{chance:.0%} for a random guess. Measured on {per_class * len(CLASSES)} "
+            f"synthetic records with the same reference/target split."
+        ),
+        "data_source": "synthetic",
+    }
+    attach_view_measures(result, chance)
+    for r in [baseline, defended]:
+        r["security"]["macro_f1"] = r["macro_f1"]
+    result["security"]["macro_f1"] = defended["macro_f1"]
     return result
 
 

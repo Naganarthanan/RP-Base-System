@@ -430,7 +430,9 @@ def test_sequential_partitioning_defence_endpoint(site):
     assert 0 < data["max_node_exposure_percent"] < 100
     assert data["storage"]["total_partitions"] == data["blocks_partitioned"] * 3
     assert all(row["partitions"] == data["blocks_partitioned"] for row in data["storage"]["nodes"])
-    assert data["metrics"]["communication_bytes_per_record"] == 513
+    assert data["metrics"]["storage_bytes_per_record"] == 513
+    assert 0 < data["metrics"]["communication_bytes_per_verification"] < 513
+    assert data["metrics"]["baseline_verification_ms"] >= 0
     assert data["metrics"]["partition_generation_ms"] >= 0
     assert data["metrics"]["average_verification_ms"] >= 0
     assert data["verification"]["status"] == "verified"
@@ -454,7 +456,11 @@ def test_sequential_partitioning_defence_endpoint(site):
                for row in data["availability"][1:])
     assert all(66 < row["available_filter_percentage"] < 67
                for row in data["availability"][1:])
-    assert all(row["unavailable_records"] == data["blocks_partitioned"]
+    # With one node offline a record is inconclusive unless, by chance, every one of its
+    # keyed positions falls in the partitions still online (the key is random per run).
+    assert all(row["not_matched_records"] == 0 for row in data["availability"][1:])
+    assert all(row["verified_records"] + row["unavailable_records"] == data["blocks_partitioned"]
+               and row["unavailable_records"] > data["blocks_partitioned"] // 2
                for row in data["availability"][1:])
 
 
@@ -505,7 +511,7 @@ def test_pairwise_partitioning_defence_endpoint(site):
     assert data["storage"]["total_partitions"] == data["blocks_partitioned"] * 6
     assert all(row["partitions"] == data["blocks_partitioned"] * 2
                for row in data["storage"]["nodes"])
-    assert data["metrics"]["communication_bytes_per_record"] == 1026
+    assert data["metrics"]["storage_bytes_per_record"] == 1026
     assert all(row["status"] == "available" for row in data["availability"])
     assert all(row["verified_records"] == data["blocks_partitioned"]
                for row in data["availability"])
@@ -604,6 +610,79 @@ def test_view_attacks_match_their_full_filter_runs(site):
     reference = client.post("/api/security/reference_similarity").get_json()
     assert (_defend(site, "sequential", "reference_similarity")["baseline"]["accuracy"]
             == reference["experiments"][0]["accuracy"])
+
+
+@pytest.mark.parametrize("defense", ["sequential", "interleaved", "pairwise"])
+def test_partitioned_verification_accuracy(site, defense):
+    data = site.test_client().post("/api/security/defend", json={
+        "check": "inference", "attack": "collusion", "defenses": [defense],
+    }).get_json()["results"][0]
+    acc = data["verification_accuracy"]
+    assert acc["genuine_records"] == acc["genuine_accepted"] == data["blocks_partitioned"]
+    assert acc["tampered_records"] > acc["genuine_records"]
+    assert acc["tampered_rejected"] == acc["tampered_records"]
+    assert acc["accuracy"] == 1 and acc["false_acceptance_rate"] == 0 and acc["false_rejection_rate"] == 0
+    assert acc["baseline_false_acceptance_rate"] == 0
+    # One copy of each partition is queried, so replication does not add traffic.
+    assert data["metrics"]["communication_bytes_per_verification"] > 0
+
+
+def test_pattern_mining_margin_scales_with_visibility(site):
+    from certchain.attacks.inference import pattern_mining as pm
+    with site.app_context():
+        m, filters = pm._chain_filters()
+        full = pm.mine(filters, m)
+        two_thirds = pm.mine(filters, m, (1 << (2 * m // 3)) - 1)
+        nothing_hidden = pm.mine(filters, m, (1 << m) - 1)
+    # The margin shrinks with what is visible, so a partial view can still link records.
+    assert full["linkable_blocks"] > 0 and two_thirds["linkable_blocks"] > 0
+    # A mask that hides nothing gives exactly the full-filter result.
+    assert nothing_hidden["pairs"] == full["pairs"]
+
+
+@pytest.mark.parametrize("attack", ["collusion", "pattern_mining", "reference_similarity"])
+def test_view_runs_report_attack_time(site, attack):
+    result = _defend(site, "sequential", attack)
+    assert all(row["security"]["attack_ms"] >= 0 for row in [result["baseline"], *result["rows"]])
+    assert result["security"]["attack_ms"] >= 0
+
+
+def _salted(site, attack):
+    return site.test_client().post("/api/security/defend", json={
+        "check": "inference", "attack": attack, "defenses": ["salted"],
+    }).get_json()["results"][0]
+
+
+def test_salted_hashing_keeps_verification_accurate(site):
+    data = _salted(site, "pattern_mining")
+    acc = data["verification_accuracy"]
+    assert data["defense"] == "salted_hashing" and data["attack_executed"] is True
+    assert acc["genuine_accepted"] == acc["genuine_records"] == data["records"] > 0
+    assert acc["tampered_rejected"] == acc["tampered_records"] > 0
+    assert acc["accuracy"] == 1 and acc["false_acceptance_rate"] == 0
+    assert data["metrics"]["storage_bytes_per_record"] == data["metrics"]["baseline_storage_bytes_per_record"] + 16
+
+
+def test_salted_hashing_stops_similarity_attacks(site):
+    mining = _salted(site, "pattern_mining")["attack_support"]["result"]
+    assert mining["baseline"]["success_rate"] > 0 and mining["rows"][0]["success_rate"] == 0
+    reference = _salted(site, "reference_similarity")["attack_support"]["result"]
+    assert reference["baseline"]["success_rate"] > 0.9
+    # Salted filters leave the attacker near a random guess (1 in 3).
+    assert reference["rows"][0]["success_rate"] < 0.45
+
+
+def test_salted_hashing_does_not_stop_a_key_holding_coalition(site):
+    result = _salted(site, "collusion")["attack_support"]["result"]
+    by_size = {row["colluding"]: row for row in result["rows"]}
+    assert by_size[1]["blocks_confirmed"] == 0  # no key, no test
+    assert by_size[2]["blocks_confirmed"] == result["baseline"]["blocks_confirmed"]
+    assert result["security"]["risk_reduction"] == 0.0
+
+
+def test_salted_hashing_reports_unsupported_attacks(site):
+    support = _salted(site, "rainbow")["attack_support"]
+    assert support["status"] == "unsupported_attack" and support["result"] is None
 
 
 def test_view_masks_must_be_valid():
