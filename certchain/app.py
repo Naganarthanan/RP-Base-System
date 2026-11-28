@@ -667,6 +667,20 @@ def create_site(data_dir=None, env=None, public_url=None) -> Flask:
         if security_throttle.blocked(ip):
             return jsonify(error="too many checks, try again in a minute"), 429
         security_throttle.hit(ip)
+        if kind in ("manipulation_collusion", "collusion_manipulation"):
+            body = request.get_json(silent=True) or {}
+            defense = body.get("defense")
+            if not defense and isinstance(body.get("defenses"), list) and len(body["defenses"]) == 1:
+                defense = body["defenses"][0]
+            if defense == "single_sequence":
+                from .attacks.manipulation.partition_attacks import sequence_rewrite_collusion
+                return jsonify(sequence_rewrite_collusion(options=body))
+            if defense == "single_odd":
+                from .attacks.manipulation.partition_attacks import odd_node_hijack
+                return jsonify(odd_node_hijack(options=body))
+            if defense == "k_sequence":
+                from .attacks.manipulation.partition_attacks import k_group_tampering
+                return jsonify(k_group_tampering(options=body))
         return jsonify(runners[kind]())
 
     @site.post("/api/security/defend")

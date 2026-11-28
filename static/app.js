@@ -311,8 +311,8 @@ const SECURITY = {
     ],
     defenses: [
       { id: "single_sequence", name: "Single-sequence partitioning", desc: "Block i goes to node ((i-1) mod n)+1, cycling in order.", live: true },
-      { id: "single_odd", name: "Single-odd partitioning", desc: "Blocks follow an odd-numbered node order." },
-      { id: "k_sequence", name: "k-sequence partitioning", desc: "Each block is replicated on k nodes in sequence." },
+      { id: "single_odd", name: "Single-odd partitioning", desc: "Blocks follow an odd-numbered node order.", live: true },
+      { id: "k_sequence", name: "k-sequence partitioning", desc: "Each block is replicated on k nodes in sequence.", live: true },
       { id: "forensic", name: "OCR / forensic asset check", desc: "Verify the logo, seal and signature images." },
       { id: "consensus", name: "Consensus threshold", desc: "Require more nodes to agree before accepting." },
       { id: "keyed", name: "Keyed anchor (HMAC)", desc: "Sign each anchor with a secret key." },
@@ -631,7 +631,8 @@ function defenseReport(r, c) {
       <td class="num">${x.false_positive ? `<span class="badge bad">yes</span>` : "none"}</td></tr>`).join("");
   const sweep = r.node_sweep.map((x) => `<tr><td>${x.nodes}</td><td class="num">${pct(x.asr_c2)}</td><td class="num">${pct(x.model_c2)}</td>
       <td class="num">${pct(x.asr_majority)}</td></tr>`).join("");
-  return `<div class="card stack"><div class="row spread"><h3>${esc(r.defense_name)} vs collusion · ${esc(c.targetLabel)}</h3>
+  const attackLabel = r.attack_name || (c.attacks.find((x) => x.id === r.attack) || {}).name || r.attack || "collusion";
+  return `<div class="card stack"><div class="row spread"><h3>${esc(r.defense_name)} vs ${esc(attackLabel)} · ${esc(c.targetLabel)}</h3>
       <span class="badge ${h.asr > 0 ? "warn" : "ok"}">ASR at ${h.colluding} colluders: ${pct(h.baseline_asr)} → ${pct(h.asr)}</span></div>
       <p class="small muted">${esc(cfg.strategy_label)} over ${cfg.nodes} nodes · ${cfg.chain_blocks} blocks from the ${esc(cfg.chain_source)}.
       The live database is not modified. ${r.red_team_reference ? `Red-team reference on the full chain: ${esc(r.red_team_reference.status)} (ASR ${r.red_team_reference.asr}).` : ""}</p>
@@ -650,6 +651,56 @@ function defenseReport(r, c) {
     <div class="card stack"><strong>Findings for the next iteration</strong><ul>${r.findings.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
       <p><strong>Conclusion.</strong> ${esc(r.conclusion)}</p>
       <p class="small muted">Model check: the analytic success rate matched ${m.physical_cases} real rewrite-and-verify runs${m.model_agreement ? "" : " — NOT in every case, review the model"}.</p></div>`;
+}
+
+function partitionAttackReport(data, opts = {}) {
+  if (!data || (!data.strategy && data.matrix)) {
+    return `<div class="card form-error">Backend returned the baseline collusion payload without defense filtering. Please restart the backend server (<code>python app.py</code>) so the updated <code>/api/security/manipulation_collusion</code> route takes effect.</div>`;
+  }
+  const asrPct = ((data.asr ?? 0) * 100).toFixed(1);
+  const dePct = ((data.defense_effectiveness ?? 0) * 100).toFixed(1);
+  const isBypassed = data.result === "Success";
+  const findingText = data.first_finding ? esc(data.first_finding.detail) : "None (Cross-reference integrity held)";
+  const colludersList = Array.isArray(data.colluder_names)
+    ? data.colluder_names
+    : Array.isArray(data.colluders)
+      ? data.colluders
+      : [];
+
+  let detailedHtml = "";
+  if (data.detailed_report) {
+    const report = { ...data.detailed_report };
+    if (opts.attackName) report.attack_name = opts.attackName;
+    if (opts.defenseName) report.defense_name = opts.defenseName;
+    detailedHtml = defenseReport(report, SECURITY.manipulation);
+  }
+
+  return `${detailedHtml}<div class="card stack">
+    <div class="row spread">
+      <div>
+        <h3>${esc(data.strategy)}</h3>
+        <p class="small muted">Target Defense: <strong>${esc(opts.defenseName || data.defense)}</strong> · Target Block: <strong>Block ${data.target_block}</strong></p>
+      </div>
+      <span class="badge ${isBypassed ? "bad" : "ok"}">${isBypassed ? "Attack Succeeded (Defense Bypassed)" : "Attack Blocked (Tampering Detected)"}</span>
+    </div>
+    <div class="row" style="gap: 12px; margin: 6px 0;">
+      <span class="badge ${data.asr > 0 ? "bad" : "ok"}">ASR: ${asrPct}%</span>
+      <span class="badge ${data.defense_effectiveness > 0 ? "ok" : "bad"}">DE (Defense Effectiveness): ${dePct}%</span>
+      <span class="badge">${esc(data.verification_status)}</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <tbody>
+          <tr><th>Tampering Category</th><td>${esc(data.tampering_category)}</td></tr>
+          <tr><th>Colluding Nodes</th><td><span class="mono">${esc(colludersList.join(", "))}</span></td></tr>
+          <tr><th>Blocks Rewritten</th><td>${data.blocks_rewritten} block(s)</td></tr>
+          <tr><th>Detection Finding</th><td><span class="small ${data.first_finding ? "warn-text" : "muted"}">${findingText}</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-top: 6px;"><strong>Evaluation Log.</strong> <span class="mono small">${esc(data.log)}</span></div>
+    ${securityMeasures(data.security, `Security measures · ${data.strategy}`)}
+  </div>`;
 }
 
 function renderSecurity() {
@@ -737,9 +788,68 @@ function renderSecurity() {
         const original = button.textContent;
         button.textContent = "Running…";
         try {
+          const partitionAttackIds = ["sequence_rewrite_collusion", "odd_node_hijack", "k_group_tampering"];
+          const partitionDefenseIds = ["single_sequence", "single_odd", "k_sequence"];
           for (const attack of liveAttacks) {
-            const data = await api("/api/security/defend", "POST", { check: securityTab, attack, defenses: attackDefs });
-            data.results.forEach((r) => { out.insertAdjacentHTML("beforeend", defenseReport(r, c)); });
+            const attackName = nameOf("attack", attack);
+            const collusionPartitionDefs = (securityTab === "manipulation" && attack === "collusion")
+              ? attackDefs.filter((id) => id === "single_odd" || id === "k_sequence")
+              : [];
+            const standardDefs = attackDefs.filter((id) => !collusionPartitionDefs.includes(id));
+
+            if (standardDefs.length) {
+              try {
+                const data = await api("/api/security/defend", "POST", { check: securityTab, attack, defenses: standardDefs });
+                const returnedIds = new Set();
+                data.results.forEach((r) => {
+                  returnedIds.add(r.defense);
+                  out.insertAdjacentHTML("beforeend", defenseReport(r, c));
+                  if (r.security && securityTab === "manipulation") {
+                    out.insertAdjacentHTML("beforeend", securityMeasures(r.security, `Security measures · ${r.defense_name} vs ${attackName}`));
+                  }
+                });
+                const missingDefs = (data.unavailable || []).filter((id) => !returnedIds.has(id));
+                if (missingDefs.length && securityTab === "manipulation" && partitionAttackIds.includes(attack)) {
+                  for (const defId of missingDefs) {
+                    if (!partitionDefenseIds.includes(defId)) continue;
+                    const res = await api(`/api/security/${attack}`, "POST", {
+                      defense: defId, category: "content", n: 4, k: 2, head_pin: false,
+                    });
+                    out.insertAdjacentHTML("beforeend", partitionAttackReport(res, { attackName, defenseName: nameOf("defense", defId) }));
+                  }
+                }
+              } catch (defErr) {
+                if (securityTab === "manipulation" && partitionAttackIds.includes(attack)) {
+                  for (const defId of standardDefs) {
+                    if (!partitionDefenseIds.includes(defId)) continue;
+                    const res = await api(`/api/security/${attack}`, "POST", {
+                      defense: defId, category: "content", n: 4, k: 2, head_pin: false,
+                    });
+                    out.insertAdjacentHTML("beforeend", partitionAttackReport(res, { attackName, defenseName: nameOf("defense", defId) }));
+                  }
+                } else {
+                  throw defErr;
+                }
+              }
+            }
+            for (const defId of collusionPartitionDefs) {
+              const payload = {
+                defense: defId,
+                category: "content",
+                n: 4,
+                k: 2,
+                head_pin: false,
+              };
+              let data = await api("/api/security/manipulation_collusion", "POST", payload);
+              if (!data.strategy && data.matrix) {
+                const fallback = defId === "single_odd" ? "odd_node_hijack" : "k_group_tampering";
+                data = await api(`/api/security/${fallback}`, "POST", payload);
+              }
+              out.insertAdjacentHTML("beforeend", partitionAttackReport(data, {
+                attackName,
+                defenseName: nameOf("defense", defId),
+              }));
+            }
           }
         } catch (err) {
           out.insertAdjacentHTML("beforeend", `<div class="card form-error">${esc(err.message)}</div>`);
@@ -783,37 +893,7 @@ function renderSecurity() {
               head_pin: false,
             };
             const data = await api(`/api/security/${atkId}`, "POST", payload);
-            const asrPct = (data.asr * 100).toFixed(1);
-            const dePct = (data.defense_effectiveness * 100).toFixed(1);
-            const isBypassed = data.result === "Success";
-            const findingText = data.first_finding ? esc(data.first_finding.detail) : "None (Cross-reference integrity held)";
-
-            resultsHtml += `<div class="card stack">
-              <div class="row spread">
-                <div>
-                  <h3>${esc(data.strategy)}</h3>
-                  <p class="small muted">Target Defense: <strong>${esc(data.defense)}</strong> · Target Block: <strong>Block ${data.target_block}</strong></p>
-                </div>
-                <span class="badge ${isBypassed ? "bad" : "ok"}">${isBypassed ? "Attack Succeeded (Defense Bypassed)" : "Attack Blocked (Tampering Detected)"}</span>
-              </div>
-              <div class="row" style="gap: 12px; margin: 6px 0;">
-                <span class="badge ${data.asr > 0 ? "bad" : "ok"}">ASR: ${asrPct}%</span>
-                <span class="badge ${data.defense_effectiveness > 0 ? "ok" : "bad"}">DE (Defense Effectiveness): ${dePct}%</span>
-                <span class="badge">${esc(data.verification_status)}</span>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <tbody>
-                    <tr><th>Tampering Category</th><td>${esc(data.tampering_category)}</td></tr>
-                    <tr><th>Colluding Nodes</th><td><span class="mono">${esc(data.colluder_names ? data.colluder_names.join(", ") : data.colluders.join(", "))}</span></td></tr>
-                    <tr><th>Blocks Rewritten</th><td>${data.blocks_rewritten} block(s)</td></tr>
-                    <tr><th>Detection Finding</th><td><span class="small ${data.first_finding ? "warn-text" : "muted"}">${findingText}</span></td></tr>
-                  </tbody>
-                </table>
-              </div>
-              <div class="card" style="margin-top: 6px;"><strong>Evaluation Log.</strong> <span class="mono small">${esc(data.log)}</span></div>
-              ${securityMeasures(data.security, `Security measures · ${data.strategy}`)}
-            </div>`;
+            resultsHtml += partitionAttackReport(data);
           } else {
             // Standard manipulation attacks (asset, field, node, qr, or manipulation baseline)
             const endpoint = atkId === "manipulation" ? "/api/security/manipulation" : `/api/security/${atkId}`;

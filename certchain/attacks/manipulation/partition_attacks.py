@@ -73,6 +73,33 @@ def _format_eval_log(strategy_name: str, defense_name: str, target: int,
     )
 
 
+DEFENSE_LABELS = {
+    "single_sequence": "Single-sequence partitioning",
+    "single_odd": "Single-odd partitioning",
+    "k_sequence": "k-sequence partitioning",
+}
+
+
+def _resolve_defense_key(defense: str | None, default_key: str) -> str:
+    return defense if defense in DEFENSE_LABELS else default_key
+
+
+def _build_detailed_report(attack_id: str, defense_key: str, n: int = 4, k: int = 2) -> dict:
+    """Builds the full Component C2 analytical report (worked scenarios, ASR matrix, strategies, sweep, findings)."""
+    try:
+        from ...defenses.manipulation.vertical import run_vertical
+    except (ImportError, ValueError):
+        from certchain.defenses.manipulation.vertical import run_vertical
+    nodes = min(max(int(n), 2), 9)
+    k_val = min(max(int(k), 2), nodes)
+    return run_vertical(
+        attack=attack_id,
+        options={"strategy": defense_key, "nodes": nodes, "k": k_val},
+        defense=defense_key,
+        name=DEFENSE_LABELS.get(defense_key, defense_key),
+    )
+
+
 # ============================================================================
 # Strategy 1: Sequence-Rewrite Collusion (against Single-sequence partitioning)
 # ============================================================================
@@ -96,6 +123,7 @@ class SequenceRewriteCollusion:
         n: int = 3,
         num_blocks: int = 12,
         head_pin: bool = False,
+        defense: str | None = None,
     ) -> dict:
         """Executes a sequence-rewrite collusion attack.
         
@@ -107,13 +135,16 @@ class SequenceRewriteCollusion:
             n: Number of nodes if creating a mock chain.
             num_blocks: Number of blocks in mock chain.
             head_pin: Whether the defense enables head hash pinning.
+            defense: Optional partitioning defense key ('single_sequence', 'single_odd', 'k_sequence').
         """
+        defense_key = _resolve_defense_key(defense, "single_sequence")
         with timer() as elapsed:
             if chain is None:
-                strategy = P.SingleSequence()
+                strategy = P.make_strategy(defense_key)
                 chain = P.PartitionedChain(P.synthetic_chain(num_blocks), n, strategy, head_pin=head_pin)
             else:
                 chain = chain.clone()
+                defense_key = chain.strategy.key
 
             n = chain.n
             N = chain.height
@@ -150,16 +181,17 @@ class SequenceRewriteCollusion:
             total_nodes=n,
         )
 
+        defense_label = chain.strategy.label if defense else cls.TARGET_DEFENSE
         colluder_names = [chain.names[i] for i in sorted(colluders)]
         log_msg = _format_eval_log(
-            cls.NAME, cls.TARGET_DEFENSE, target_block, colluder_names,
+            cls.NAME, defense_label, target_block, colluder_names,
             result, asr, de, verification["first"]
         )
         logger.info(log_msg)
 
         return {
             "strategy": cls.NAME,
-            "defense": cls.TARGET_DEFENSE,
+            "defense": defense_label,
             "result": result,
             "asr": asr,
             "defense_effectiveness": de,
@@ -177,6 +209,7 @@ class SequenceRewriteCollusion:
             "modifications": diffs,
             "head_pin": chain.head_pin,
             "log": log_msg,
+            "detailed_report": _build_detailed_report("sequence_rewrite_collusion", defense_key, n=n),
         }
 
 
@@ -203,6 +236,7 @@ class OddNodeHijack:
         n: int = 4,
         num_blocks: int = 12,
         head_pin: bool = False,
+        defense: str | None = None,
     ) -> dict:
         """Executes the Odd-Node Hijack attack.
         
@@ -214,13 +248,16 @@ class OddNodeHijack:
             n: Number of nodes (best demonstrated with n >= 4 for distinct odd/even node sets).
             num_blocks: Number of blocks in mock chain.
             head_pin: Whether the defense enables head hash pinning.
+            defense: Optional partitioning defense key ('single_sequence', 'single_odd', 'k_sequence').
         """
+        defense_key = _resolve_defense_key(defense, "single_odd")
         with timer() as elapsed:
             if chain is None:
-                strategy = P.SingleOdd()
+                strategy = P.make_strategy(defense_key)
                 chain = P.PartitionedChain(P.synthetic_chain(num_blocks), n, strategy, head_pin=head_pin)
             else:
                 chain = chain.clone()
+                defense_key = chain.strategy.key
 
             n = chain.n
             N = chain.height
@@ -260,16 +297,17 @@ class OddNodeHijack:
             total_nodes=n,
         )
 
+        defense_label = chain.strategy.label if defense else cls.TARGET_DEFENSE
         colluder_names = [chain.names[i] for i in sorted(colluders)]
         log_msg = _format_eval_log(
-            cls.NAME, cls.TARGET_DEFENSE, target_block, colluder_names,
+            cls.NAME, defense_label, target_block, colluder_names,
             result, asr, de, verification["first"]
         )
         logger.info(log_msg)
 
         return {
             "strategy": cls.NAME,
-            "defense": cls.TARGET_DEFENSE,
+            "defense": defense_label,
             "result": result,
             "asr": asr,
             "defense_effectiveness": de,
@@ -287,6 +325,7 @@ class OddNodeHijack:
             "modifications": diffs,
             "head_pin": chain.head_pin,
             "log": log_msg,
+            "detailed_report": _build_detailed_report("odd_node_hijack", defense_key, n=n),
         }
 
 
@@ -316,6 +355,7 @@ class KGroupTampering:
         num_blocks: int = 12,
         boundary_mode: str = "within_group",
         head_pin: bool = False,
+        defense: str | None = None,
     ) -> dict:
         """Executes the K-Group Tampering attack.
         
@@ -332,13 +372,16 @@ class KGroupTampering:
                 - 'full_group_boundary': Colluders control all k nodes of the boundary block
                   (tests boundary transition consistency).
             head_pin: Whether the defense enables head hash pinning.
+            defense: Optional partitioning defense key ('single_sequence', 'single_odd', 'k_sequence').
         """
+        defense_key = _resolve_defense_key(defense, "k_sequence")
         with timer() as elapsed:
             if chain is None:
-                strategy = P.KSequence(k=k)
+                strategy = P.make_strategy(defense_key, k)
                 chain = P.PartitionedChain(P.synthetic_chain(num_blocks), n, strategy, head_pin=head_pin)
             else:
                 chain = chain.clone()
+                defense_key = chain.strategy.key
 
             n = chain.n
             N = chain.height
@@ -379,7 +422,7 @@ class KGroupTampering:
             total_nodes=n,
         )
 
-        defense_label = f"k-sequence (k={k})"
+        defense_label = chain.strategy.label if defense else f"k-sequence (k={k})"
         colluder_names = [chain.names[i] for i in sorted(colluders)]
         log_msg = _format_eval_log(
             cls.NAME, defense_label, target_block, colluder_names,
@@ -408,6 +451,7 @@ class KGroupTampering:
             "modifications": diffs,
             "head_pin": chain.head_pin,
             "log": log_msg,
+            "detailed_report": _build_detailed_report("k_group_tampering", defense_key, n=n, k=k),
         }
 
 
@@ -427,21 +471,21 @@ def _get_request_opts() -> dict:
 def sequence_rewrite_collusion(options: dict | None = None, **kwargs) -> dict:
     """Wrapper function for Strategy 1: Sequence-Rewrite Collusion."""
     opts = {**_get_request_opts(), **(options or {}), **kwargs}
-    clean_opts = {k: v for k, v in opts.items() if k in ("target_block", "colluders", "category", "n", "num_blocks", "head_pin")}
+    clean_opts = {k: v for k, v in opts.items() if k in ("target_block", "colluders", "category", "n", "num_blocks", "head_pin", "defense")}
     return SequenceRewriteCollusion.execute(**clean_opts)
 
 
 def odd_node_hijack(options: dict | None = None, **kwargs) -> dict:
     """Wrapper function for Strategy 2: Odd-Node Hijack."""
     opts = {**_get_request_opts(), **(options or {}), **kwargs}
-    clean_opts = {k: v for k, v in opts.items() if k in ("target_block", "odd_colluders", "category", "n", "num_blocks", "head_pin")}
+    clean_opts = {k: v for k, v in opts.items() if k in ("target_block", "odd_colluders", "category", "n", "num_blocks", "head_pin", "defense")}
     return OddNodeHijack.execute(**clean_opts)
 
 
 def k_group_tampering(options: dict | None = None, **kwargs) -> dict:
     """Wrapper function for Strategy 3: K-Group Tampering."""
     opts = {**_get_request_opts(), **(options or {}), **kwargs}
-    clean_opts = {k: v for k, v in opts.items() if k in ("target_block", "colluders", "k", "category", "n", "num_blocks", "boundary_mode", "head_pin")}
+    clean_opts = {k: v for k, v in opts.items() if k in ("target_block", "colluders", "k", "category", "n", "num_blocks", "boundary_mode", "head_pin", "defense")}
     return KGroupTampering.execute(**clean_opts)
 
 
