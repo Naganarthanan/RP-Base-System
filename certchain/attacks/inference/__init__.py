@@ -8,13 +8,14 @@ from .collusion import run_inference_collusion
 from .pattern_mining import run_inference_pattern_mining
 from .reference_similarity import run_inference_reference_similarity
 
-from . import collusion, pattern_mining, reference_similarity
+from . import adaptive, collusion, pattern_mining, reference_similarity
 
 RUNNERS = {
     "inference": run_inference,
     "collusion": run_inference_collusion,
     "pattern_mining": run_inference_pattern_mining,
     "reference_similarity": run_inference_reference_similarity,
+    "adaptive": adaptive.run_inference_adaptive,
 }
 
 # Attacks a defence can run against its own per-node views: id -> run_on_views(views).
@@ -23,6 +24,7 @@ VIEW_RUNNERS = {
     "collusion": collusion.run_on_views,
     "pattern_mining": pattern_mining.run_on_views,
     "reference_similarity": reference_similarity.run_on_views,
+    "adaptive": adaptive.run_on_views,
 }
 
 # Attacks a defence can run against its own encoding: id -> run_on_encoding(encoding).
@@ -31,6 +33,7 @@ ENCODING_RUNNERS = {
     "collusion": collusion.run_on_encoding,
     "pattern_mining": pattern_mining.run_on_encoding,
     "reference_similarity": reference_similarity.run_on_encoding,
+    "adaptive": adaptive.run_on_encoding,
 }
 
 __all__ = ["run_inference", "run_inference_collusion", "run_inference_pattern_mining",

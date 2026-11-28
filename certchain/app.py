@@ -692,7 +692,17 @@ def create_site(data_dir=None, env=None, public_url=None) -> Flask:
             except ValueError as err:
                 return jsonify(error=str(err)), 400
         return jsonify(attack=attack, results=results, unavailable=unavailable)
-    
+
+    @site.post("/api/security/ablation")
+    def security_ablation():
+        """Every inference attack against every inference defence setting, as one table."""
+        from .defenses.inference.ablation import run_ablation
+        ip = request.remote_addr or "unknown"
+        if security_throttle.blocked(ip):
+            return jsonify(error="too many checks, try again in a minute"), 429
+        security_throttle.hit(ip)
+        return jsonify(run_ablation())
+
     @site.errorhandler(404)
     def on_404(_):
         return jsonify(error="not found"), 404

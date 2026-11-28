@@ -124,19 +124,30 @@ def mining_measures(found: dict, truth: dict, baseline_asr: float | None = None,
     )
 
 
-def run_on_views(views) -> dict:
+def _encoded_filters(encoding, filters, seed: int = 2026) -> list[tuple[int, int]]:
+    """The chain's records re-encoded by a defence's encoding (see views.py)."""
+    ledger = systems()["bloom"].config["ledger"]
+    rng = random.Random(seed)
+    return [(idx, encoding.encode(ledger.record(idx), idx, rng))
+            for idx, _ in filters if ledger.record(idx) is not None]
+
+
+def run_on_views(views, encoding=None) -> dict:
     """Pattern mining against defence-supplied node views (see views.py).
 
-    Each node mines only the positions its view exposes. Fewer visible bits means fewer
-    shared bits per common field, so fewer pairs clear the link margin.
+    Each view mines only the positions it exposes. Fewer visible bits means fewer
+    shared bits per common field, so fewer pairs clear the link margin. With an
+    `encoding`, the views are taken over the records encoded the defence's way; the
+    baseline is always the complete filters stored on the chain.
     """
     m, filters = _chain_filters()
     views = check_views(views, m)
     truth = _field_values()
+    observed = _encoded_filters(encoding, filters) if encoding is not None else filters
 
-    def measure(label, nodes, mask, baseline_asr=None):
+    def measure(label, nodes, mask, data, baseline_asr=None):
         with timer() as elapsed:
-            found = mine(filters, m, mask)
+            found = mine(data, m, mask)
         total, linkable = found["total_blocks"], found["linkable_blocks"]
         return row(label, nodes, mask, m, asr(linkable, total),
                    f"{linkable} of {total} blocks linkable in {len(found['clusters'])} group(s), "
@@ -145,8 +156,8 @@ def run_on_views(views) -> dict:
                    clusters=len(found["clusters"]),
                    security=mining_measures(found, truth, baseline_asr, elapsed()))
 
-    baseline = measure("Complete Bloom filter (no defence)", [], full_mask(m))
-    rows = [measure(v["node"], [v["node"]], v["mask"], baseline["success_rate"]) for v in views]
+    baseline = measure("Complete Bloom filter (no defence)", [], full_mask(m), filters)
+    rows = [measure(v["node"], [v["node"]], v["mask"], observed, baseline["success_rate"]) for v in views]
     worst = max(rows, key=lambda r: r["success_rate"])
     return {
         "attack": "pattern_mining",
@@ -156,7 +167,7 @@ def run_on_views(views) -> dict:
         "security": {**worst["security"], "worst_attacker": worst["label"]},
         "conclusion": (
             f"With complete filters {baseline['linkable_blocks']} blocks are linkable without the key. "
-            f"Under this partitioning the strongest single node ({worst['label']}, "
+            f"Under this defence the strongest view ({worst['label']}, "
             f"{worst['visibility_percentage']}% of bits) links {worst['linkable_blocks']}."
         ),
     }
@@ -169,11 +180,8 @@ def run_on_encoding(encoding, seed: int = 2026) -> dict:
     records encoded the defence's way. Nothing is written to the chain.
     """
     m, filters = _chain_filters()
-    ledger = systems()["bloom"].config["ledger"]
     truth = _field_values()
-    rng = random.Random(seed)
-    defended_filters = [(idx, encoding.encode(ledger.record(idx), idx, rng))
-                        for idx, _ in filters if ledger.record(idx) is not None]
+    defended_filters = _encoded_filters(encoding, filters, seed)
 
     def measure(label, chain_filters, baseline_asr=None):
         with timer() as elapsed:

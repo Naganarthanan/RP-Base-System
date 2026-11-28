@@ -6,6 +6,7 @@ each partition is stored as a single copy at one participating node and normal
 verification checks the owning partition without rebuilding the complete filter.
 """
 import base64
+import random
 import time
 from collections.abc import Iterable, Sequence
 
@@ -501,8 +502,14 @@ def _run_partitioning(
     strategy: str,
     attack: str | None = None,
     options: dict | None = None,
+    encoding=None,
 ) -> dict:
-    """Evaluate one horizontal strategy and an optional integrated attack."""
+    """Evaluate one horizontal strategy and an optional integrated attack.
+
+    With `encoding` (for example per-record salting, see salting.py) every record is
+    re-encoded that way before it is partitioned, verification checks the encoded items,
+    and the attack runs on the encoded filters' node views.
+    """
     if strategy not in STRATEGY_NAMES:
         raise PartitionError(f"unsupported partitioning strategy {strategy!r}")
     if attack is not None and not isinstance(attack, str):
@@ -524,10 +531,21 @@ def _run_partitioning(
     baseline_seconds = 0.0
     communication_bytes = 0
     tampered_checks = tampered_accepted = baseline_tampered_accepted = 0
+    encode_rng = random.Random(2026)
+
+    def items_of(tx: dict, block_id) -> list[str]:
+        items = record_items(tx)
+        return [encoding.salted(item, block_id) for item in items] if encoding else items
 
     for block_id, anchor in anchors.items():
         if not {"m", "k", "bits"} <= anchor.keys():
             continue
+        if encoding is not None:
+            tx = ledger.record(block_id)
+            if tx is None:
+                continue
+            anchor = {"m": anchor_impl.M, "k": anchor_impl.K,
+                      "bits": encoding.filter(tx, block_id, encode_rng).to_b64()}
         started = time.perf_counter()
         partitions = partition_anchor(
             anchor,
@@ -563,7 +581,7 @@ def _run_partitioning(
             continue
         records[block_id] = tx
         stored = store.partitions_for_record(block_id)
-        items = record_items(tx)
+        items = items_of(tx, block_id)
         started = time.perf_counter()
         verification = verify_items_detailed(stored, anchor_impl.key, items)
         verification_seconds += time.perf_counter() - started
@@ -575,7 +593,7 @@ def _run_partitioning(
         baseline_seconds += time.perf_counter() - started
         # Verification accuracy: every forged copy of the record must be rejected.
         for forged in _tampered_variants(tx):
-            forged_items = record_items(forged)
+            forged_items = items_of(forged, block_id)
             tampered_checks += 1
             tampered_accepted += verify_items_detailed(stored, anchor_impl.key, forged_items)["verified"]
             baseline_tampered_accepted += all(item in baseline for item in forged_items)
@@ -601,7 +619,7 @@ def _run_partitioning(
         available_filter_bits = 0
         for block_id, tx in records.items():
             visible = store.partitions_for_record(block_id, active)
-            result = verify_items_detailed(visible, anchor_impl.key, record_items(tx))
+            result = verify_items_detailed(visible, anchor_impl.key, items_of(tx, block_id))
             total_required += result["total_required_positions"]
             checked += result["checked_positions"]
             matched += result["matched_positions"]
@@ -742,7 +760,7 @@ def _run_partitioning(
         # The attack component runs its own logic on exactly the bits each node holds.
         from ...attacks.inference import VIEW_RUNNERS
         view_runner = VIEW_RUNNERS.get(attack)
-        attack_result = view_runner(view_masks) if view_runner and view_masks else None
+        attack_result = view_runner(view_masks, encoding=encoding) if view_runner and view_masks else None
         attack_support = {
             "status": "executed" if attack_result else "unsupported_attack",
             "requested_attack": attack,
@@ -770,7 +788,8 @@ def _run_partitioning(
         "defense": "horizontal_partitioning",
         "system": "bloom",
         "strategy": strategy,
-        "strategy_name": STRATEGY_NAMES[strategy],
+        "strategy_name": (f"Salted + {STRATEGY_NAMES[strategy]}" if encoding else STRATEGY_NAMES[strategy]),
+        "salted": encoding is not None,
         "attack": attack,
         "attack_supported": attack_executed,
         "attack_executed": attack_executed,
@@ -809,6 +828,8 @@ def _run_partitioning(
             f"{replication_factor}. "
             "Partition-aware verification matched the complete-filter baseline without giving "
             "one node the entire bit array."
+            + (" Every record was first salted, so the same value sets different bits in different records."
+               if encoding else "")
         ),
     }
 
@@ -835,6 +856,19 @@ def run_pairwise_partitioning(
 ) -> dict:
     """Evaluate sequential ranges with pairwise partition replication."""
     return _run_partitioning("pairwise", attack, options)
+
+
+def run_salted_partitioning(
+    attack: str | None = None,
+    options: dict | None = None,
+) -> dict:
+    """Combined defence: per-record salting, then sequential partitioning across nodes.
+
+    Salting removes the shared bit patterns that similarity attacks rely on; partitioning
+    keeps a key-holding coalition from seeing all of a guess's positions.
+    """
+    from .salting import SaltedEncoding
+    return _run_partitioning("sequential", attack, options, SaltedEncoding(systems()["bloom"].config["anchor"]))
 
 
 # Backward-compatible name for code written before the strategy was named SBP.
