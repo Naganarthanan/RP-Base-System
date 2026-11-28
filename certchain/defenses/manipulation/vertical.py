@@ -248,9 +248,84 @@ def run_vertical(attack: str = "collusion", options: dict | None = None,
         total_nodes=n,
     )
 
+    # Inference-aligned node views and attack_support breakdown for unified reporting
+    node_views = [{
+        "node": names[nd],
+        "blocks_stored": len(plain.stores[nd]),
+        "total_blocks": N,
+        "storage_percentage": round(100.0 * len(plain.stores[nd]) / N, 1),
+        "rule": f"idx mod {n} ({strategy.label})",
+    } for nd in range(n)]
+
+    baseline_row = {
+        "label": "Full replication (no defence)",
+        "nodes": names,
+        "visibility_percentage": 100.0,
+        "success_rate": at["baseline_asr"],
+        "security": measures(
+            success_rate=at["baseline_asr"],
+            chance=0.0,
+            baseline_asr=None,
+            collusion_threshold=threshold,
+            total_nodes=n,
+        ),
+        "detail": (
+            f"Every node holds 100% of blocks; {threshold} of {n} colluding nodes reach "
+            f"majority consensus and rewrite any target block."
+        ),
+    }
+    attack_rows = []
+    for row in matrix:
+        c_size = row["colluding"]
+        held_union = len({idx for nd in range(c_size) for idx in plain.stores[nd]})
+        vis_pct = round(100.0 * held_union / N, 1)
+        row_base = row["baseline_asr"] if row["baseline_asr"] > 0 else 1.0
+        attack_rows.append({
+            "label": f"{c_size} colluding",
+            "nodes": names[:c_size],
+            "visibility_percentage": vis_pct,
+            "success_rate": row["asr"],
+            "security": measures(
+                success_rate=row["asr"],
+                chance=0.0,
+                baseline_asr=row_base,
+                collusion_threshold=threshold,
+                total_nodes=n,
+            ),
+            "detail": (
+                f"{row['worst_coalition_blocks']} of {N} tail blocks forgeable in worst case; "
+                f"head-pin ASR {round(row['asr_head_pin'] * 100, 1)}%."
+            ),
+        })
+
+    conclusion_text = (
+        f"Against {attack_name}, with the chain split over {n} nodes ({strategy.label}), {threshold} colluding organisations succeed "
+        f"on {at['asr'] * 100:.1f}% of target blocks instead of 100% on the fully replicated chain; they can no "
+        f"longer rewrite a record without also controlling the nodes that hold every later block. "
+        f"With head pinning the figure is {at['asr_head_pin'] * 100:.1f}% (only an all-node coalition succeeds)."
+    )
+
+    attack_support = {
+        "status": "executed",
+        "requested_attack": attack,
+        "attack_executed": True,
+        "node_views": node_views,
+        "result": {
+            "attack": attack,
+            "metric": f"Attack success rate under {strategy.label} ({attack_name})",
+            "chance": 0.0,
+            "baseline": baseline_row,
+            "rows": attack_rows,
+            "security": security,
+            "conclusion": conclusion_text,
+        },
+    }
+
     return {
         "check": "manipulation", "layout": "partitioning", "defense": defense, "defense_name": name,
         "attack": attack, "attack_name": attack_name,
+        "attack_supported": True, "attack_executed": True,
+        "attack_support": attack_support, "node_views": node_views,
         "security": security,
         "config": {"strategy": opts["strategy"], "strategy_label": strategy.label, "nodes": n, "k": opts["k"],
                    "chain_blocks": N, "chain_source": source, "threshold": threshold, "model_k": model_k,
@@ -260,11 +335,7 @@ def run_vertical(attack: str = "collusion", options: dict | None = None,
         "red_team_reference": red,
         "scenarios": scenarios, "matrix": matrix, "strategies": strategies, "node_sweep": sweep,
         "metrics": metrics, "findings": findings,
-        "conclusion": (
-            f"Against {attack_name}, with the chain split over {n} nodes ({strategy.label}), {threshold} colluding organisations succeed "
-            f"on {at['asr'] * 100:.1f}% of target blocks instead of 100% on the fully replicated chain; they can no "
-            f"longer rewrite a record without also controlling the nodes that hold every later block. "
-            f"With head pinning the figure is {at['asr_head_pin'] * 100:.1f}% (only an all-node coalition succeeds)."),
+        "conclusion": conclusion_text,
     }
 
 
