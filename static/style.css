@@ -265,3 +265,5 @@ dialog form { display: grid; gap: 12px; }
 }
 .measures-body { margin-top: 10px; }
 details.measures[open] .expand-hint { display: none; }
+.breakdown .attacker-col { min-width: 200px; }
+.breakdown th { white-space: normal; min-width: 90px; }

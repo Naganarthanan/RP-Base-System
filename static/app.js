@@ -512,8 +512,8 @@ function securityMeasures(s, title = "Security measures", rows = null, isManipul
   if (withSecurity.length) {
     const cols = measureKeys(...withSecurity.map((r) => r.security));
     breakdown = `<h4>Per attacker</h4>
-      <div class="table-wrap"><table><thead><tr><th>Attacker</th><th class="num">Visibility</th>${cols.map((k) => `<th class="num">${esc((dict[k] || MEASURES[k] || {}).name || k)}</th>`).join("")}</tr></thead>
-      <tbody>${withSecurity.map((r) => `<tr><td>${esc(r.label)}${r.nodes && r.nodes.length && r.label !== r.nodes.join(", ") ? `<br><span class="small muted">${esc(r.nodes.join(", "))}</span>` : ""}</td>
+      <div class="table-wrap"><table class="breakdown"><thead><tr><th class="attacker-col">Attacker</th><th class="num">Visibility</th>${cols.map((k) => `<th class="num">${esc((dict[k] || MEASURES[k] || {}).name || k)}</th>`).join("")}</tr></thead>
+      <tbody>${withSecurity.map((r) => `<tr><td class="attacker-col">${esc(r.label)}${r.nodes && r.nodes.length && r.label !== r.nodes.join(", ") ? `<br><span class="small muted">${esc(r.nodes.join(", "))}</span>` : ""}</td>
         <td class="num">${r.visibility_percentage != null ? `${r.visibility_percentage}%` : ""}</td>
         ${cols.map((k) => `<td class="num">${k === "risk_reduction" && r.security[k] == null ? "baseline" : esc(measureValue(k, r.security[k], dict))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
   }
@@ -711,15 +711,22 @@ function defenseReport(r, c) {
   return `<div class="card stack"><div class="row spread"><h3>${esc(r.defense_name)} - ${esc(c.targetLabel)}</h3>
       <span class="badge ${passed ? "ok" : "warn"}">${passed ? "Validation passed" : "Partial tail exposure"}</span></div>
       <p class="small muted">${esc(cfg.strategy_label)} over ${cfg.nodes} nodes · ${cfg.chain_blocks} blocks from the ${esc(cfg.chain_source)}. ${r.red_team_reference ? `Red-team reference on the full chain: ${esc(r.red_team_reference.status)} (ASR ${r.red_team_reference.asr}).` : ""}</p>
-      <h4>Verification and detection</h4>
+      <div class="row"><span class="badge">${cfg.chain_blocks} blocks partitioned</span>
+        <span class="badge ${m.model_agreement ? "ok" : "bad"}">Model check ${m.model_agreement ? "passed" : "failed"}</span>
+        <span class="badge">Storage per node ${m.storage_percent_of_full}%</span></div>
+      <h4>Verification accuracy</h4>
+      <div class="row"><span class="badge ${m.detection_rate >= 0.9 ? "ok" : "warn"}" title="Share of rewrites by coalitions smaller than all nodes that verification rejected">Tampered rewrites rejected ${pct(m.detection_rate)}</span>
+        <span class="badge ${m.false_positive_rate === 0 ? "ok" : "bad"}">Genuine chain accepted ${pct(1 - m.false_positive_rate)}</span>
+        <span class="badge ${m.detection_rate === 1 ? "ok" : "warn"}">False acceptance ${pct(1 - m.detection_rate)}</span>
+        <span class="badge ${m.false_positive_rate === 0 ? "ok" : "bad"}">False rejection ${pct(m.false_positive_rate)}</span></div>
+      <p class="small muted">${m.physical_cases} physical rewrite checks on cloned chains (${m.model_agreement ? "every outcome matched the model" : "some outcomes did not match the model"}). An all-node coalition is left out of the rejection rate: no one is left to detect it.</p>
+      <h4>Attack success</h4>
       <div class="row"><span class="badge ${h.asr > 0 ? "warn" : "ok"}">ASR at ${h.colluding} colluders: ${pct(h.baseline_asr)} → ${pct(h.asr)}</span>
-        <span class="badge ${h.asr_head_pin === 0 ? "ok" : "warn"}">With head pin: ${pct(h.asr_head_pin)}</span>
-        <span class="badge ${m.detection_rate >= 0.9 ? "ok" : "warn"}" title="Share of attacks by coalitions smaller than all nodes that were detected or blocked">Detection ${pct(m.detection_rate)}</span>
-        <span class="badge ${m.false_positive_rate === 0 ? "ok" : "bad"}">False positives ${pct(m.false_positive_rate)}</span>
-        <span class="badge">${m.physical_cases} physical rewrite checks (${m.model_agreement ? "model agreed" : "model mismatch"})</span></div>
+        <span class="badge ${h.asr_head_pin === 0 ? "ok" : "warn"}">With head pin: ${pct(h.asr_head_pin)}</span></div>
       <h4>Runtime and storage</h4>
-      <div class="row"><span class="badge">Storage ${m.storage_percent_of_full}% of full copy</span>
-        <span class="badge ${m.latency_ms < m.latency_target_ms ? "ok" : "bad"}">Average verify ${m.latency_ms} ms</span>
+      <div class="row"><span class="badge ${m.latency_ms < m.latency_target_ms ? "ok" : "bad"}">Average verify ${m.latency_ms} ms</span>
+        <span class="badge">Verify target ${m.latency_target_ms} ms</span>
+        <span class="badge">Storage ${m.storage_percent_of_full}% of full copy</span>
         <span class="badge">Blocks per node: ${esc((m.blocks_per_node || []).join(" / "))}</span></div></div>
     ${attackCard}
     <div class="card stack"><h3>Worked scenarios (coalition forges one record)</h3>
@@ -805,7 +812,7 @@ function renderSecurity() {
       </div>
       <div class="row spread">
         <span class="small muted" id="sec-summary">No defence selected — baseline run.</span>
-        <div class="row">${securityTab === "inference" ? `<button class="btn" id="sec-ablation">Compare all attacks × defences</button>` : ""}
+        <div class="row"><button class="btn" id="sec-ablation">Compare all attacks × defences</button>
           <button class="btn primary" id="sec-run">Run ${esc(c.title.toLowerCase())} check</button></div>
       </div>
     </section>
@@ -864,9 +871,34 @@ function renderSecurity() {
     const original = ablationButton.textContent;
     ablationButton.textContent = "Running all combinations…";
     try {
-      const data = await api("/api/security/ablation", "POST", {});
+      // Inference has a server-side ablation; for the other checks, run every live
+      // attack × defence pair through /defend and build the same table here.
+      let data;
+      if (securityTab === "inference") {
+        data = await api("/api/security/ablation", "POST", {});
+      } else {
+        const pick = (s) => ({ asr: s.asr, security_level: s.security_level, risk_reduction: s.risk_reduction });
+        const liveDefs = c.defenses.filter((d) => d.live);
+        const rows = [];
+        for (const a of c.attacks.filter((x) => x.live)) {
+          const cells = {};
+          for (const d of liveDefs) {
+            const res = await api("/api/security/defend", "POST", { check: securityTab, attack: a.id, defenses: [d.id] });
+            const result = res.results && res.results[0] && res.results[0].attack_support && res.results[0].attack_support.result;
+            if (!result) continue;
+            cells[d.id] = pick(result.security);
+            if (!cells.none && result.baseline && result.baseline.security) cells.none = pick(result.baseline.security);
+          }
+          rows.push({ attack: a.id, name: a.name, cells });
+        }
+        data = {
+          columns: [{ id: "none", name: "No defence" }, ...liveDefs.map((d) => ({ id: d.id, name: d.name }))],
+          rows,
+          note: "Each cell is the worst case for that defence: the strongest coalition short of all nodes. Security level is 1 - attacker advantage; 100% means every forgery is caught.",
+        };
+      }
       const tone = (v) => (v >= 0.9 ? "ok" : v >= 0.5 ? "warn" : "bad");
-      const cell = (s) => `<td class="num"><span class="badge ${tone(s.security_level)}">Security ${pct(s.security_level)}</span>
+      const cell = (s) => !s ? `<td class="num"><span class="small muted">N/A</span></td>` : `<td class="num"><span class="badge ${tone(s.security_level)}">Security ${pct(s.security_level)}</span>
         <br><span class="small muted">ASR ${pct(s.asr)}${s.risk_reduction != null ? ` · reduction ${pct(s.risk_reduction)}` : ""}</span></td>`;
       out.innerHTML = `<div class="card stack"><div class="row spread"><h3>All attacks × defences · ${esc(c.targetLabel)}</h3></div>
         <p class="small muted">${esc(data.note)}</p>
@@ -918,9 +950,9 @@ function renderSecurity() {
             if (!defs.length) continue;
 
             const attackName = nameOf("attack", attack);
-            const collusionPartitionDefs = (securityTab === "manipulation" && attack === "collusion")
-              ? defs.filter((id) => id === "single_odd" || id === "k_sequence")
-              : [];
+            // Every manipulation defence now returns its attack result through /defend, so all
+            // pairs share one report layout (the older per-attack route stays as a fallback).
+            const collusionPartitionDefs = [];
             const standardDefs = defs.filter((id) => !collusionPartitionDefs.includes(id));
 
             if (standardDefs.length) {
