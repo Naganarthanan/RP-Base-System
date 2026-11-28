@@ -287,11 +287,13 @@ def run_on_views(views, seed: int = SEED, per_class: int = RECORDS_PER_CLASS) ->
     chance = 1 / len(CLASSES)
 
     def measure(label, nodes, mask):
-        _, metrics = attack_view(references, targets, lambda bits: bits & mask, mask.bit_count())
+        with timer() as elapsed:
+            _, metrics = attack_view(references, targets, lambda bits: bits & mask, mask.bit_count())
         return row(label, nodes, mask, m, metrics["accuracy"],
                    f"Accuracy {metrics['accuracy']:.0%}, macro F1 {metrics['macro_f1']:.2f} "
                    f"({metrics['correct']} of {metrics['total']} targets)",
-                   accuracy=metrics["accuracy"], macro_f1=metrics["macro_f1"])
+                   accuracy=metrics["accuracy"], macro_f1=metrics["macro_f1"],
+                   attack_ms=round(elapsed(), 1))
 
     baseline = measure("Complete Bloom filter (no defence)", [], full_mask(m))
     rows = [measure(v["node"], [v["node"]], v["mask"]) for v in views]
@@ -306,8 +308,13 @@ def run_on_views(views, seed: int = SEED, per_class: int = RECORDS_PER_CLASS) ->
             f"With the complete filter the attack inferred the programme for "
             f"{baseline['success_rate']:.0%} of targets. Under this partitioning the best single "
             f"node ({worst['label']}, {worst['visibility_percentage']}% of bits) reached "
-            f"{worst['success_rate']:.0%}, against {chance:.0%} for a random guess."
+            f"{worst['success_rate']:.0%}, against {chance:.0%} for a random guess. Measured on "
+            f"{len(targets)} synthetic target records ({len(references)} labelled references), "
+            f"not the chain's blocks, because the attack needs records whose programme is known."
         ),
+        "data_source": "synthetic",
+        "reference_records": len(references),
+        "target_records": len(targets),
     }
     attach_view_measures(result, chance)
     for r in [baseline, *rows]:

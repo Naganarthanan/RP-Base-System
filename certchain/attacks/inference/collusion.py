@@ -69,11 +69,13 @@ def run_on_views(views) -> dict:
     threshold = len(views) // 2 + 1
 
     def measure(label, nodes, mask, has_key):
-        confirmed, candidate = _exposure(blocks, guesses, mask) if has_key else (0, 0)
+        with timer() as elapsed:
+            confirmed, candidate = _exposure(blocks, guesses, mask) if has_key else (0, 0)
         detail = (f"{confirmed} of {total} blocks confirmed, {candidate} candidates"
                   if has_key else "Bloom key not reconstructed; no guess can be tested")
         return row(label, nodes, mask, m, confirmed / total if total else 0.0, detail,
-                   key_reconstructed=has_key, blocks_confirmed=confirmed, blocks_candidate=candidate)
+                   key_reconstructed=has_key, blocks_confirmed=confirmed, blocks_candidate=candidate,
+                   attack_ms=round(elapsed(), 1))
 
     baseline = measure(f"{threshold} colluding, complete filter (no defence)", [], full_mask(m), True)
     rows = []

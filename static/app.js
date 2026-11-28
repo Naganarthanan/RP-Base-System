@@ -574,6 +574,7 @@ function defenseReport(r, c) {
         ${res ? securityMeasures(res.security, `Security measures · ${selectedAttack} under ${r.strategy_name}`, [res.baseline, ...res.rows]) : ""}`;
     }
     const passed = r.all_verified && r.all_reconstructed;
+    const acc = r.verification_accuracy;
     const placementLabel = r.placement === "pairwise_replication" ? "pairwise-replicated placement" : "single-copy placement";
     return `<div class="card stack"><div class="row spread"><h3>Horizontal Partitioning - ${esc(c.targetLabel)}</h3>
         <span class="badge ${passed ? "ok" : "bad"}">${passed ? "Validation passed" : "Validation failed"}</span></div>
@@ -584,9 +585,22 @@ function defenseReport(r, c) {
         <span class="badge ${r.verification.baseline_agreement ? "ok" : "bad"}">Baseline agreement ${r.verification.baseline_agreement ? "passed" : "failed"}</span>
         <span class="badge">Position match ${percentage(r.verification.match_percentage)}</span>
         <span class="badge">Position coverage ${percentage(r.verification.coverage_percentage)}</span>
-        <span class="badge">Maximum node exposure ${r.max_node_exposure_percent}%</span>
+        <span class="badge">Maximum node exposure ${r.max_node_exposure_percent}%</span></div>
+      <h4>Verification accuracy</h4>
+      <div class="row"><span class="badge ${acc.accuracy === 1 ? "ok" : "bad"}">Accuracy ${percentage(acc.accuracy == null ? null : +(acc.accuracy * 100).toFixed(2))}</span>
+        <span class="badge">${acc.genuine_accepted} of ${acc.genuine_records} genuine records accepted</span>
+        <span class="badge">${acc.tampered_rejected} of ${acc.tampered_records} tampered records rejected</span>
+        <span class="badge ${acc.false_acceptance_rate ? "bad" : "ok"}">False acceptance ${percentage(acc.false_acceptance_rate == null ? null : +(acc.false_acceptance_rate * 100).toFixed(2))}</span>
+        <span class="badge ${acc.false_rejection_rate ? "bad" : "ok"}">False rejection ${percentage(acc.false_rejection_rate == null ? null : +(acc.false_rejection_rate * 100).toFixed(2))}</span></div>
+      <p class="small muted">Each tampered record is a copy of a real record with one field changed; every field of every record is tried once.</p>
+      <h4>Runtime and communication</h4>
+      <div class="row"><span class="badge">Partition generation ${r.metrics.partition_generation_ms} ms</span>
         <span class="badge">Average verify ${r.metrics.average_verification_ms} ms</span>
-        <span class="badge">Communication ${r.metrics.communication_bytes_per_record} bytes/record</span></div></div>
+        <span class="badge">No-defence verify ${r.metrics.baseline_verification_ms} ms</span>
+        <span class="badge">Verify overhead ${r.metrics.verification_overhead_ms} ms</span>
+        <span class="badge">Communication ${r.metrics.communication_bytes_per_verification} bytes/verification</span>
+        <span class="badge">Storage ${r.metrics.storage_bytes_per_record} bytes/record</span></div>
+      <p class="small muted">Communication: the verifier sends each node the indexes of the required positions in its partition and gets one bit back per index. Storage: partition payload kept across all nodes for one record.</p></div>
       ${attackSupport}
       <div class="card stack"><h3>Partition assignment</h3>
         <div class="table-wrap"><table><thead><tr><th>Partition</th><th class="num">Bit positions</th><th class="num">Bits</th><th>Assigned node(s)</th></tr></thead>
@@ -595,7 +609,7 @@ function defenseReport(r, c) {
         <div class="table-wrap"><table><thead><tr><th>Node</th><th class="num">Stored partitions</th><th class="num">Payload bytes</th></tr></thead>
         <tbody>${nodeStorage}</tbody></table></div></div>
       <div class="card stack"><h3>Partition verification contributions</h3>
-        <p class="small muted">Each node checks only the required keyed positions inside its assigned partition. Local match and verification coverage are reported separately.</p>
+        <p class="small muted">The verifier holds the Bloom key, computes the keyed positions, and sends each node only the positions inside its assigned partition; nodes never hold the key. Local match and verification coverage are reported separately.</p>
         <div class="table-wrap"><table><thead><tr><th>Node</th><th>Partition</th><th class="num">Required positions</th><th class="num">Matched positions</th><th class="num">Local match</th><th class="num">Position share</th><th class="num">Coverage</th><th>Status</th></tr></thead>
         <tbody>${contributions}</tbody></table></div></div>
       <div class="card stack"><h3>Node availability experiment</h3>

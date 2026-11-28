@@ -8,15 +8,18 @@ records that share a value - a structural inference leak that needs no key at al
 The attacker only reads the stored filters (public on the chain) and counts shared bits;
 nothing here uses the secret key or recovers an actual value.
 """
+import math
+
 from ...anchors import record_items
 from ..common import systems
 from .measures import asr, measures, timer
 from .views import check_views, filter_int, full_mask, row
 
-# Extra shared bits, beyond what chance predicts, that flag two records as linked.
-# One shared keyed field contributes about k (=10) set bits, so this margin (~2 fields'
-# worth) only links records that share two or more low-entropy values - a confident link
-# that random overlap almost never reaches.
+# Extra shared bits, beyond what chance predicts, that flag two records as linked, on the
+# complete filter. One shared keyed field contributes about k (=10) set bits, so this margin
+# (~2 fields' worth) only links records that share two or more low-entropy values - a
+# confident link that random overlap almost never reaches. On a partial view the margin is
+# scaled so the same confidence holds (see mine).
 LINK_MARGIN = 18
 
 
@@ -33,10 +36,21 @@ def _chain_filters() -> tuple[int, list[tuple[int, int]]]:
 
 
 def mine(filters: list[tuple[int, int]], m: int, mask: int | None = None) -> dict:
-    """Link blocks whose shared bits exceed chance, looking only at the `mask` positions."""
+    """Link blocks whose shared bits exceed chance, looking only at the `mask` positions.
+
+    On a partial view the margin is scaled by sqrt(visible share). Chance overlap between
+    two filters has a spread that grows with the square root of the bits compared, so this
+    keeps the false-link confidence the same as on the full filter. A fixed margin would make
+    any partial view look safe only because the threshold became unreachable; a linear one
+    would accept chance overlaps as links. The real signal (about k bits per shared field)
+    shrinks linearly, so a smaller view genuinely needs more shared fields to link two records.
+    """
+    margin = LINK_MARGIN
     if mask is not None:
+        visible = mask.bit_count()
+        margin = LINK_MARGIN * math.sqrt(visible / m)
         filters = [(idx, value & mask) for idx, value in filters]
-        m = mask.bit_count()
+        m = visible
     blocks = [(idx, value, _popcount(value)) for idx, value in filters]
     total = len(blocks)
 
@@ -59,7 +73,7 @@ def mine(filters: list[tuple[int, int]], m: int, mask: int | None = None) -> dic
             idx_j, bj, sj = blocks[j]
             overlap = _popcount(bi & bj)
             expected = si * sj / m
-            if overlap - expected >= LINK_MARGIN:
+            if overlap - expected >= margin:
                 union(idx_i, idx_j)
                 pairs.append((idx_i, idx_j))
     links = len(pairs)
