@@ -14,7 +14,10 @@ from .partitioning import (
     verify_items_detailed,
 )
 
+from .salting import SaltedEncoding, run_salted_hashing
+
 RUNNERS = {
+    "salted": run_salted_hashing,
     "sequential": run_sequential_partitioning,
     "interleaved": run_interleaved_partitioning,
     "pairwise": run_pairwise_partitioning,
@@ -32,6 +35,8 @@ __all__ = [
     "run_interleaved_partitioning",
     "run_pairwise_partitioning",
     "run_sequential_partitioning",
+    "run_salted_hashing",
+    "SaltedEncoding",
     "verify_items",
     "verify_items_detailed",
     "RUNNERS",

@@ -221,6 +221,8 @@ dialog form { display: grid; gap: 12px; }
 .pick input { margin-top: 3px; width: 16px; height: 16px; flex: none; accent-color: var(--brand); }
 .pick-body { display: grid; gap: 1px; }
 .pick-body strong { font-weight: 600; }
+.pick:has(input:disabled) { opacity: .4; cursor: not-allowed; }
+.pick:has(input:disabled):hover { border-color: var(--line); }
 .sel-row { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
 .sel-row > .small { min-width: 64px; }
 
