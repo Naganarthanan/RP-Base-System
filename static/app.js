@@ -304,15 +304,16 @@ const SECURITY = {
       { id: "sequence_rewrite_collusion", name: "Sequence-Rewrite Collusion", desc: "Exploits strict cyclic sequential storage (Single-sequence).", live: true },
       { id: "odd_node_hijack", name: "Odd-Node Hijack", desc: "Targets the subset of nodes holding odd-numbered blocks (Single-odd).", live: true },
       { id: "k_group_tampering", name: "K-Group Tampering", desc: "Targets k-group boundaries to test replica agreement (k-sequence).", live: true },
-      { id: "asset", name: "Asset substitution", desc: "Swap the logo, seal or signature on a certificate.", live: true },
-      { id: "field", name: "Field rewrite", desc: "Edit a record field and recompute its hash.", live: true },
-      { id: "node", name: "Node copy rewrite", desc: "A compromised organisation rewrites its own chain copy.", live: true },
-      { id: "qr", name: "QR / metadata swap", desc: "Repoint the QR code or alter the file metadata.", live: true },
     ],
+    // `counters`: the attacks each defence is designed against. Selecting an attack
+    // enables only these defences; the rest stay disabled.
     defenses: [
-      { id: "single_sequence", name: "Single-sequence partitioning", desc: "Block i goes to node ((i-1) mod n)+1, cycling in order.", live: true },
-      { id: "single_odd", name: "Single-odd partitioning", desc: "Blocks follow an odd-numbered node order.", live: true },
-      { id: "k_sequence", name: "k-sequence partitioning", desc: "Each block is replicated on k nodes in sequence.", live: true },
+      { id: "single_sequence", name: "Single-sequence partitioning", desc: "Block i goes to node ((i-1) mod n)+1, cycling in order.", live: true,
+        counters: ["collusion", "sequence_rewrite_collusion"] },
+      { id: "single_odd", name: "Single-odd partitioning", desc: "Blocks follow an odd-numbered node order.", live: true,
+        counters: ["collusion", "odd_node_hijack"] },
+      { id: "k_sequence", name: "k-sequence partitioning", desc: "Each block is replicated on k nodes in sequence.", live: true,
+        counters: ["collusion", "k_group_tampering"] },
       // { id: "forensic", name: "OCR / forensic asset check", desc: "Verify the logo, seal and signature images." },
       // { id: "consensus", name: "Consensus threshold", desc: "Require more nodes to agree before accepting." },
       // { id: "keyed", name: "Keyed anchor (HMAC)", desc: "Sign each anchor with a secret key." },
@@ -695,14 +696,32 @@ function defenseReport(r, c) {
   const sweep = r.node_sweep.map((x) => `<tr><td>${x.nodes}</td><td class="num">${pct(x.asr_c2)}</td><td class="num">${pct(x.model_c2)}</td>
       <td class="num">${pct(x.asr_majority)}</td></tr>`).join("");
   const attackLabel = r.attack_name || (c.attacks.find((x) => x.id === r.attack) || {}).name || r.attack || "collusion";
-  return `<div class="card stack"><div class="row spread"><h3>${esc(r.defense_name)} vs ${esc(attackLabel)} · ${esc(c.targetLabel)}</h3>
-      <span class="badge ${h.asr > 0 ? "warn" : "ok"}">ASR at ${h.colluding} colluders: ${pct(h.baseline_asr)} → ${pct(h.asr)}</span></div>
-      <p class="small muted">${esc(cfg.strategy_label)} over ${cfg.nodes} nodes · ${cfg.chain_blocks} blocks from the ${esc(cfg.chain_source)}.
-      The live database is not modified. ${r.red_team_reference ? `Red-team reference on the full chain: ${esc(r.red_team_reference.status)} (ASR ${r.red_team_reference.asr}).` : ""}</p>
-      <div class="row"><span class="badge ${m.detection_rate >= 0.9 ? "ok" : "warn"}" title="Share of attacks by coalitions smaller than all nodes that were detected or blocked">Detection ${pct(m.detection_rate)}</span>
+  const passed = m.false_positive_rate === 0 && m.detection_rate >= 0.9;
+  const nodeViews = (r.node_views || (r.attack_support && r.attack_support.node_views) || []).map((v) => `<tr>
+      <td>${esc(v.node)}</td><td class="num">${v.blocks_stored} of ${v.total_blocks}</td>
+      <td class="num">${v.storage_percentage}%</td><td class="small mono">${esc(v.rule)}</td></tr>`).join("");
+  const supportRes = r.attack_support && r.attack_support.result;
+  const attackCard = supportRes ? `<div class="card stack"><div class="row spread"><h3>Attack against partitioned chain</h3>
+        <span class="badge ok">Attack executed</span></div>
+      <p class="small muted">Selected attack: <strong>${esc(attackLabel)}</strong>. Each coalition's attacker can only rewrite blocks stored on the nodes it holds, and is compared with the fully replicated baseline.</p>
+      ${nodeViews ? `<div class="table-wrap"><table><thead><tr><th>Node view</th><th class="num">Stored blocks</th><th class="num">Storage share</th><th>Assignment rule</th></tr></thead><tbody>${nodeViews}</tbody></table></div>` : ""}
+      ${attackResultTable(supportRes)}</div>
+    ${securityMeasures(supportRes.security || r.security, `Security measures · ${attackLabel} under ${r.defense_name}`, [supportRes.baseline, ...supportRes.rows], true)}` : "";
+
+  return `<div class="card stack"><div class="row spread"><h3>${esc(r.defense_name)} - ${esc(c.targetLabel)}</h3>
+      <span class="badge ${passed ? "ok" : "warn"}">${passed ? "Validation passed" : "Partial tail exposure"}</span></div>
+      <p class="small muted">${esc(cfg.strategy_label)} over ${cfg.nodes} nodes · ${cfg.chain_blocks} blocks from the ${esc(cfg.chain_source)}. ${r.red_team_reference ? `Red-team reference on the full chain: ${esc(r.red_team_reference.status)} (ASR ${r.red_team_reference.asr}).` : ""}</p>
+      <h4>Verification and detection</h4>
+      <div class="row"><span class="badge ${h.asr > 0 ? "warn" : "ok"}">ASR at ${h.colluding} colluders: ${pct(h.baseline_asr)} → ${pct(h.asr)}</span>
+        <span class="badge ${h.asr_head_pin === 0 ? "ok" : "warn"}">With head pin: ${pct(h.asr_head_pin)}</span>
+        <span class="badge ${m.detection_rate >= 0.9 ? "ok" : "warn"}" title="Share of attacks by coalitions smaller than all nodes that were detected or blocked">Detection ${pct(m.detection_rate)}</span>
         <span class="badge ${m.false_positive_rate === 0 ? "ok" : "bad"}">False positives ${pct(m.false_positive_rate)}</span>
-        <span class="badge">Storage ${m.storage_percent_of_full}% of full copy</span>
-        <span class="badge ${m.latency_ms < m.latency_target_ms ? "ok" : "bad"}">Verify ${m.latency_ms} ms</span></div></div>
+        <span class="badge">${m.physical_cases} physical rewrite checks (${m.model_agreement ? "model agreed" : "model mismatch"})</span></div>
+      <h4>Runtime and storage</h4>
+      <div class="row"><span class="badge">Storage ${m.storage_percent_of_full}% of full copy</span>
+        <span class="badge ${m.latency_ms < m.latency_target_ms ? "ok" : "bad"}">Average verify ${m.latency_ms} ms</span>
+        <span class="badge">Blocks per node: ${esc((m.blocks_per_node || []).join(" / "))}</span></div></div>
+    ${attackCard}
     <div class="card stack"><h3>Worked scenarios (coalition forges one record)</h3>
       <div class="table-wrap"><table><thead><tr><th>Target</th><th>Full replication</th><th>Vertical, as proposed</th><th>Vertical + head pin</th></tr></thead><tbody>${scenarios}</tbody></table></div></div>
     <div class="card stack"><h3>Attack success rate by coalition size</h3>
@@ -713,7 +732,7 @@ function defenseReport(r, c) {
       <div class="table-wrap"><table><thead><tr><th>Nodes</th><th class="num">ASR, 2 colluding</th><th class="num">Model, 2 colluding</th><th class="num">ASR, majority colluding</th></tr></thead><tbody>${sweep}</tbody></table></div></div>
     <div class="card stack"><strong>Findings for the next iteration</strong><ul>${r.findings.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
       <p><strong>Conclusion.</strong> ${esc(r.conclusion)}</p>
-      <p class="small muted">Model check: the analytic success rate matched ${m.physical_cases} real rewrite-and-verify runs${m.model_agreement ? "" : " — NOT in every case, review the model"}.</p></div>`;
+      <p class="small muted">This read-only experiment splits blocks into temporary per-node stores. The live ledger is not modified${r.attack_executed ? "; the selected attack ran against the partitioned chain" : ""}.</p></div>`;
 }
 
 function partitionAttackReport(data, opts = {}) {
@@ -730,15 +749,14 @@ function partitionAttackReport(data, opts = {}) {
       ? data.colluders
       : [];
 
-  let detailedHtml = "";
   if (data.detailed_report) {
     const report = { ...data.detailed_report };
     if (opts.attackName) report.attack_name = opts.attackName;
     if (opts.defenseName) report.defense_name = opts.defenseName;
-    detailedHtml = defenseReport(report, SECURITY.manipulation);
+    return defenseReport(report, SECURITY.manipulation);
   }
 
-  return `${detailedHtml}<div class="card stack">
+  return `<div class="card stack">
     <div class="row spread">
       <div>
         <h3>${esc(data.strategy)}</h3>
@@ -912,7 +930,7 @@ function renderSecurity() {
                 data.results.forEach((r) => {
                   returnedIds.add(r.defense);
                   out.insertAdjacentHTML("beforeend", defenseReport(r, c));
-                  if (r.security && securityTab === "manipulation") {
+                  if (r.security && securityTab === "manipulation" && !(r.attack_support && r.attack_support.result)) {
                     out.insertAdjacentHTML("beforeend", securityMeasures(r.security, `Security measures · ${r.defense_name} vs ${attackName}`));
                   }
                 });
